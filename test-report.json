@@ -1,0 +1,737 @@
+{
+    "success": true,
+    "message": "Student report data retrieved successfully",
+    "data": {
+        "student": {
+            "id": 1,
+            "claraId": "CLARA-S1-101",
+            "name": "Rajesh Kumar",
+            "date_of_birth": "2014-05-15T00:00:00.000Z",
+            "gender": "MALE",
+            "phone_number": "9876543210",
+            "email": null,
+            "photo_url": null,
+            "father_name": "Suresh Kumar",
+            "mother_name": "Priya Kumar",
+            "schoolId": "cmi5fyl3k0002p64qmhb372r6",
+            "class": "8",
+            "section": "A",
+            "roll_number": "25",
+            "admission_number": "ADM2024025",
+            "createdAt": "2025-11-19T04:48:08.953Z",
+            "updatedAt": "2025-11-19T04:48:08.953Z",
+            "createdBy": "cmi5fyl360000p64qx0ykvku3",
+            "updatedBy": null,
+            "isDeleted": false,
+            "school": {
+                "claraId": "CLARA-S1",
+                "schoolName": "Time School",
+                "address": "DVK Road, ANUMULA ROAD, near RAMALAYAM",
+                "city": "Haliya",
+                "state": "Telangana",
+                "pincode": "508377"
+            }
+        },
+        "campData": [
+            {
+                "id": 1,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8qmza000bp6dis86h1zhl",
+                "value": "145",
+                "comment": "",
+                "createdAt": "2025-11-19T05:23:45.778Z",
+                "updatedAt": "2025-11-19T05:23:45.778Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "HEIGHT in CM",
+                    "description": "The Height Measurement records a child's growth and development over time.",
+                    "type": "SINGLE",
+                    "options": null
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 2,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8rh31000dp6diki2r7lb6",
+                "value": "35",
+                "comment": "",
+                "createdAt": "2025-11-19T05:23:45.787Z",
+                "updatedAt": "2025-11-19T05:23:45.787Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "WEIGHT in KG",
+                    "description": "The Weight Measurement helps evaluate a child's nutritional status and overall physical well-being.",
+                    "type": "SINGLE",
+                    "options": null
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 3,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8s5fc000fp6diu41stsy8",
+                "value": "16.6",
+                "comment": "",
+                "createdAt": "2025-11-19T05:23:45.795Z",
+                "updatedAt": "2025-11-19T05:23:45.795Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "BMI",
+                    "description": "The Body Mass Index (BMI) is calculated using a child's height and weight.",
+                    "type": "SINGLE",
+                    "options": null
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 4,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8u4vi000jp6dixwhnztqk",
+                "value": "78",
+                "comment": "",
+                "createdAt": "2025-11-19T05:23:45.804Z",
+                "updatedAt": "2025-11-19T05:23:45.804Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "PULSE RATE in Bpm",
+                    "description": "The Pulse Rate measures the number of heartbeats per minute.",
+                    "type": "SINGLE",
+                    "options": null
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 5,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8usmy000lp6disjta3y7s",
+                "value": "98",
+                "comment": "",
+                "createdAt": "2025-11-19T05:23:45.812Z",
+                "updatedAt": "2025-11-19T05:23:45.812Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "OXYMETRY in %",
+                    "description": "The Oximetry test measures the oxygen saturation (SpO₂) level in the blood.",
+                    "type": "SINGLE",
+                    "options": null
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 6,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx89d5r0003p6di82b65xix",
+                "subParameterId": "cmhx8w7kb000np6dicv5pe7pu",
+                "value": "Hemoglobin is within the normal range for age.",
+                "comment": "No signs of anemia",
+                "createdAt": "2025-11-19T05:23:45.822Z",
+                "updatedAt": "2025-11-19T05:23:45.822Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "BIOMETRICS & VITALS",
+                    "description": "This assessment records key health indicators to understand a child's overall physical well-being."
+                },
+                "subParameter": {
+                    "name": "HEMOGLOBIN in g/dl",
+                    "description": "The Hemoglobin test measures the amount of hemoglobin in the blood.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Anemic\",\"value\":\"Hemoglobin is below the normal range for age.\",\"comment\":\"Indicates anemia.\"},{\"name\":\"Non-Anemic\",\"value\":\"Hemoglobin is within the normal range for age.\",\"comment\":\"No signs of anemia\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 7,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx938u2000vp6dirnva81v0",
+                "value": "No pallor detected.",
+                "comment": "Child appears healthy.",
+                "createdAt": "2025-11-19T05:00:06.064Z",
+                "updatedAt": "2025-11-19T05:00:06.064Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "PALLOR",
+                    "description": "The Pallor assessment checks for paleness of the skin.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Present\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"Absent\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 8,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx946ef000xp6di24ity97c",
+                "value": "Absent",
+                "comment": "",
+                "createdAt": "2025-11-19T05:00:06.088Z",
+                "updatedAt": "2025-11-19T05:00:06.088Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "ICTERUS",
+                    "description": "The Icterus assessment observes any yellowish discoloration.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Present\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"Absent\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 9,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx9520q000zp6dif0kqqptp",
+                "value": "No cyanosis noted",
+                "comment": "Oxygenation appears normal.",
+                "createdAt": "2025-11-19T05:00:06.101Z",
+                "updatedAt": "2025-11-19T05:00:06.101Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "CYANOSIS",
+                    "description": "The Cyanosis assessment checks for bluish discoloration.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Bluish discoloration observed\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No cyanosis noted\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 10,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx96ohu0011p6di2b6isd8k",
+                "value": "No lymph node enlargement observed.",
+                "comment": "",
+                "createdAt": "2025-11-19T05:00:06.110Z",
+                "updatedAt": "2025-11-19T05:00:06.110Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "LYMPHADENOPATHY",
+                    "description": "The Lymphadenopathy assessment involves checking for swelling.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Swollen lymph nodes detected.\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No lymph node enlargement observed.\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 11,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx97nla0013p6dijiv11cu7",
+                "value": "Visible signs of allergy (redness/rashes)",
+                "comment": "Further assessment may be required.",
+                "createdAt": "2025-11-19T05:00:06.119Z",
+                "updatedAt": "2025-11-19T05:00:06.119Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "ALLERGY",
+                    "description": "The Allergy assessment observes for skin rashes.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Visible signs of allergy\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No allergy-related findings noted.\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 12,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx98hz00015p6di5jpai50p",
+                "value": "Skin appears healthy",
+                "comment": "No lesions or infections.",
+                "createdAt": "2025-11-19T05:00:06.129Z",
+                "updatedAt": "2025-11-19T05:00:06.129Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "SKIN ASSESMENT",
+                    "description": "The Skin Assessment evaluates the overall condition of the skin.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Normal\",\"value\":\"Skin appears healthy\",\"comment\":\"\"},{\"name\":\"Abnormal\",\"value\":\"Skin shows issues\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 13,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx99ci40017p6divb8gxhs8",
+                "value": "No clubbing observed",
+                "comment": "Nails appear normal.",
+                "createdAt": "2025-11-19T05:00:06.138Z",
+                "updatedAt": "2025-11-19T05:00:06.138Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "CLUBBING",
+                    "description": "The Clubbing assessment involves checking for nail changes.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"Clubbing noted\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No clubbing observed\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 14,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx9a4tj0019p6diw0yuuegs",
+                "value": "Bones and joints appear normal.",
+                "comment": "No deformities.",
+                "createdAt": "2025-11-19T05:00:06.147Z",
+                "updatedAt": "2025-11-19T05:00:06.147Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "BONES AND JOINT",
+                    "description": "The Bones and Joints assessment examines alignment.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Normal\",\"value\":\"Normal\",\"comment\":\"\"},{\"name\":\"Abnormal\",\"value\":\"Abnormalities observed\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 15,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8fxoc0005p6diyie85i4h",
+                "subParameterId": "cmhx9b85h001bp6di19vxpm8m",
+                "value": "puberty changes appropriate for age.",
+                "comment": "Normal development.",
+                "createdAt": "2025-11-19T05:00:06.156Z",
+                "updatedAt": "2025-11-19T05:00:06.156Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "GENERAL EXAMINATION",
+                    "description": "The General Examination provides an overall assessment of a child's physical health."
+                },
+                "subParameter": {
+                    "name": "PUBERTY CHANGES",
+                    "description": "The Puberty Changes assessment observes physical development.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Normal\",\"value\":\"appropriate for age\",\"comment\":\"\"},{\"name\":\"Delayed\",\"value\":\"delayed\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 16,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9la83001rp6di7q4xznqq",
+                "value": "Pit and fissure caries detected.",
+                "comment": "Child should visit a dentist.",
+                "createdAt": "2025-11-19T05:00:06.174Z",
+                "updatedAt": "2025-11-19T05:00:06.174Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "PIT & FISSURE CARIES",
+                    "description": "Checks for cavities in grooves.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"detected\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No caries\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 17,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9m6od001tp6diod16o3p5",
+                "value": "No signs of nursing bottle caries.",
+                "comment": "",
+                "createdAt": "2025-11-19T05:00:06.188Z",
+                "updatedAt": "2025-11-19T05:00:06.188Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "NURSING BOTTLE CARIES",
+                    "description": "Identifies decay from bottle feeding.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"observed\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No signs\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 18,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9mwjm001vp6disqgow16w",
+                "value": "Gums appear healthy with no signs of inflammation.",
+                "comment": "",
+                "createdAt": "2025-11-19T05:00:06.198Z",
+                "updatedAt": "2025-11-19T05:00:06.198Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "GUM INFLAMATION",
+                    "description": "Checks for gum swelling.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"inflammation noted\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"healthy\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 19,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9o4an001xp6di6jmlky5m",
+                "value": "No bleeding observed.",
+                "comment": "",
+                "createdAt": "2025-11-19T05:00:06.207Z",
+                "updatedAt": "2025-11-19T05:00:06.207Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "BLEEDING",
+                    "description": "Checks for gum bleeding.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"observed\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No bleeding\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 20,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9osps001zp6dixpo3nssl",
+                "value": "Visible tartar noted.",
+                "comment": "Dental visit advised.",
+                "createdAt": "2025-11-19T05:00:06.216Z",
+                "updatedAt": "2025-11-19T05:00:06.216Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "TARTAR",
+                    "description": "Checks for tartar buildup.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"noted\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No tartar\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 21,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9pkq30021p6di11l7vcq6",
+                "value": "Plaque is present",
+                "comment": "Brush twice daily.",
+                "createdAt": "2025-11-19T05:00:06.225Z",
+                "updatedAt": "2025-11-19T05:00:06.225Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "PLAQUE",
+                    "description": "Identifies plaque buildup.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Present\",\"value\":\"present\",\"comment\":\"\"},{\"name\":\"Absent\",\"value\":\"No plaque\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 22,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9qaot0023p6dihyhv2mee",
+                "value": "Oral hygiene is fair.",
+                "comment": "Encourage better brushing.",
+                "createdAt": "2025-11-19T05:00:06.235Z",
+                "updatedAt": "2025-11-19T05:00:06.235Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "ORAL HYGIENE",
+                    "description": "Evaluates cleanliness.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Good\",\"value\":\"good\",\"comment\":\"\"},{\"name\":\"Fair\",\"value\":\"fair\",\"comment\":\"\"},{\"name\":\"Poor\",\"value\":\"poor\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            },
+            {
+                "id": 23,
+                "campId": "cmi5hz6cb0007p64qm3bpr3vo",
+                "campCommonStudentDataId": null,
+                "studentId": 1,
+                "parameterId": "cmhx8n6v00008p6dieevpdtvc",
+                "subParameterId": "cmhx9rbtj0025p6diqessthor",
+                "value": "Visit A Dentist",
+                "comment": "We recommend visiting a dentist for detailed evaluation",
+                "createdAt": "2025-11-19T05:00:06.244Z",
+                "updatedAt": "2025-11-19T05:00:06.244Z",
+                "createdBy": "cmi5hswmu0005p64qdwikao1b",
+                "updatedBy": null,
+                "isDeleted": false,
+                "fileId": null,
+                "parameter": {
+                    "name": "DENTAL CHECKUP",
+                    "description": "The Dental Checkup evaluates oral health."
+                },
+                "subParameter": {
+                    "name": "DENTIST VISIT RECOMMENDATION",
+                    "description": "Provides guidance on dental visit.",
+                    "type": "MULTI",
+                    "options": "[{\"name\":\"Visit A Dentist\",\"value\":\"Visit A Dentist\",\"comment\":\"\"},{\"name\":\"Normal\",\"value\":\"Routine check-up enough\",\"comment\":\"\"}]"
+                },
+                "camp": {
+                    "name": "Time School",
+                    "camp_date": "2025-11-20T00:00:00.000Z"
+                }
+            }
+        ],
+        "school": {
+            "claraId": "CLARA-S1",
+            "schoolName": "Time School",
+            "address": "DVK Road, ANUMULA ROAD, near RAMALAYAM",
+            "city": "Haliya",
+            "state": "Telangana",
+            "pincode": "508377"
+        }
+    },
+    "statusCode": 200
+}

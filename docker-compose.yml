@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  pdf-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clara-pdf-generator
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount backgrounds and fonts (optional, if you want to update without rebuild)
+      - ./backgrounds:/app/backgrounds:ro
+      - ./fonts:/app/fonts:ro
+      # Mount output folder to persist generated PDFs
+      - ./generated-reports:/app/generated-reports
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - clara-network
+
+networks:
+  clara-network:
+    driver: bridge
