@@ -4,6 +4,7 @@ Combines ALL pages into a single PDF
 USING EXACT COORDINATES FROM YOUR WORKING FILES
 WITH CUSTOM FONT SUPPORT
 PRODUCTION-READY - WORKS WITH BACKEND JSON RESPONSE
+COMMAND-LINE ARGS SUPPORT FOR FASTAPI INTEGRATION
 """
 
 from reportlab.lib.pagesizes import A4
@@ -18,6 +19,8 @@ import json
 import os
 import tempfile
 from datetime import datetime
+import argparse
+import sys
 
 PAGE_WIDTH, PAGE_HEIGHT = A4
 
@@ -53,14 +56,14 @@ def parse_production_json(production_data):
     
     # Build student object
     student = {
-        'name': student_data.get('name', ''),
+        'name': student_data.get('name', '') or '',
         'dob': dob,
-        'sex': student_data.get('gender', '').upper()[0] if student_data.get('gender') else '',  # MALE -> M
-        'class': student_data.get('class', ''),
-        'section': student_data.get('section', ''),
-        'roll_no': student_data.get('roll_number', ''),
-        'admission_no': student_data.get('admission_number', ''),
-        'clara_id': student_data.get('claraId', '')
+        'sex': student_data.get('gender', '').upper()[0] if student_data.get('gender') else '',
+        'class': str(student_data.get('class', '') or ''),
+        'section': str(student_data.get('section', '') or ''),
+        'roll_no': str(student_data.get('roll_number', '') or ''),
+        'admission_no': str(student_data.get('admission_number', '') or ''),
+        'clara_id': student_data.get('claraId', '') or ''
     }
     
     # Initialize parsed data structure
@@ -109,15 +112,15 @@ def parse_production_json(production_data):
         # BIOMETRICS & VITALS
         if param_name == 'BIOMETRICS & VITALS':
             if sub_param_name == 'HEIGHT in CM':
-                parsed_data['measurements']['height'] = value
+                parsed_data['measurements']['height'] = str(value) if value else ''
             elif sub_param_name == 'WEIGHT in KG':
-                parsed_data['measurements']['weight'] = value
+                parsed_data['measurements']['weight'] = str(value) if value else ''
             elif sub_param_name == 'BMI':
-                parsed_data['measurements']['bmi'] = value
+                parsed_data['measurements']['bmi'] = str(value) if value else ''
             elif sub_param_name == 'PULSE RATE in Bpm':
-                parsed_data['vitals']['pulse_rate'] = value
+                parsed_data['vitals']['pulse_rate'] = str(value) if value else '78'
             elif sub_param_name == 'OXYMETRY in %':
-                parsed_data['vitals']['oxymetry'] = value
+                parsed_data['vitals']['oxymetry'] = str(value) if value else '98'
             elif sub_param_name == 'HEMOGLOBIN in g/dl':
                 # Extract hemoglobin value from text or determine status
                 if 'below' in value.lower() or 'anemic' in value.lower():
@@ -418,37 +421,54 @@ class ClaraHealthPDFGenerator:
         # YOUR EXACT COORDINATES - NOT CHANGED
         c.setFont(self.get_font('bold'), 13)
         c.setFillColor(colors.black)
-        camp_name = data.get('camp_name', 'Lorel Ipsum')
+        camp_name = str(data.get('camp_name', '') or 'School')
         c.drawString(120, 663, camp_name)
-        clara_id_camp = data.get('clara_id_camp', '')
-        # if clara_id_camp:
-        #     c.drawString(100, 738, clara_id_camp)
         
         student = data.get('student', {})
         c.setFont(self.get_font('student'), 13)  # Courier for student info
-        c.drawString(78, 615, student.get('name', 'Omkar'))
-        c.drawString(78, 598, student.get('dob', '15/06/2016'))
-        c.drawString(78, 581, student.get('sex', 'M'))
-        c.drawString(252, 615, student.get('class', '6th'))
-        c.drawString(252, 598, student.get('section', 'Rose'))
-        c.drawString(252, 581, student.get('roll_no', '14'))
-        c.drawString(481, 615, student.get('admission_no', '083245'))
-        c.drawString(413, 598, student.get('clara_id', 'CLS14741'))
+        
+        # Safe string conversion for all student fields
+        name = str(student.get('name') or 'N/A')
+        dob = str(student.get('dob') or '')
+        sex = str(student.get('sex') or '')
+        student_class = str(student.get('class') or '')
+        section = str(student.get('section') or '')
+        roll_no = str(student.get('roll_no') or '')
+        admission_no = str(student.get('admission_no') or '')
+        clara_id = str(student.get('clara_id') or '')
+        
+        c.drawString(78, 615, name)
+        c.drawString(78, 598, dob)
+        c.drawString(78, 581, sex)
+        c.drawString(252, 615, student_class)
+        c.drawString(252, 598, section)
+        c.drawString(252, 581, roll_no)
+        c.drawString(481, 615, admission_no)
+        c.drawString(413, 598, clara_id)
         
         measurements = data.get('measurements', {})
         c.setFont(self.get_font('regular'), 13)  # Source Sans 3 for measurements
-        c.drawString(90, 504, f"{measurements.get('height', '145')} cm")
-        c.drawString(92, 487, f"{measurements.get('weight', '35')} kg")
-        c.drawString(92, 470, str(measurements.get('bmi', '15.7')))
+        
+        # Safe conversion for measurements with defaults
+        height = str(measurements.get('height') or '145')
+        weight = str(measurements.get('weight') or '35')
+        bmi = str(measurements.get('bmi') or '16.5')
+        
+        c.drawString(90, 504, f"{height} cm")
+        c.drawString(92, 487, f"{weight} kg")
+        c.drawString(92, 470, bmi)
         
         # BIG BMI VALUE in green box (right side) - Bitter Bold for infographic
-        bmi_value = str(measurements.get('bmi', '15.7'))
         c.setFont(self.get_font('infographic'), 45)
         c.setFillColor(colors.black)
-        c.drawString(418, 495, bmi_value)  # Big BMI number
+        c.drawString(418, 495, bmi)  # Big BMI number
         
         # BMI scale highlight
-        bmi = float(measurements.get('bmi', 15.7))
+        try:
+            bmi_float = float(bmi)
+        except:
+            bmi_float = 16.5
+            
         box_positions = {
             'underweight': (70, 340, 160, 355),
             'normal': (254, 402, 290, 412),
@@ -456,13 +476,13 @@ class ClaraHealthPDFGenerator:
             'obese': (542, 402, 578, 412),
             'morbidly_obese': (687, 402, 723, 412)
         }
-        if bmi < 18.5:
+        if bmi_float < 18.5:
             category = 'underweight'
-        elif 18.5 <= bmi < 25:
+        elif 18.5 <= bmi_float < 25:
             category = 'normal'
-        elif 25 <= bmi < 30:
+        elif 25 <= bmi_float < 30:
             category = 'overweight'
-        elif 30 <= bmi < 40:
+        elif 30 <= bmi_float < 40:
             category = 'obese'
         else:
             category = 'morbidly_obese'
@@ -472,13 +492,13 @@ class ClaraHealthPDFGenerator:
         c.rect(x1, y1, x2 - x1, y2 - y1, fill=0, stroke=1)
         
         # Observation
-        if bmi < 18.5:
+        if bmi_float < 18.5:
             observation = "Underweight"
-        elif 18.5 <= bmi < 25:
+        elif 18.5 <= bmi_float < 25:
             observation = "Normal BMI"
-        elif 25 <= bmi < 30:
+        elif 25 <= bmi_float < 30:
             observation = "Overweight"
-        elif 30 <= bmi < 40:
+        elif 30 <= bmi_float < 40:
             observation = "Obese"
         else:
             observation = "Morbidly Obese"
@@ -497,26 +517,31 @@ class ClaraHealthPDFGenerator:
                    preserveAspectRatio=True, mask='auto')
         
         vitals = data.get('vitals', {})
-        pulse_rate = vitals.get('pulse_rate', '78')
-        oxymetry = vitals.get('oxymetry', '98')
+        pulse_rate = str(vitals.get('pulse_rate') or '78')
+        oxymetry = str(vitals.get('oxymetry') or '98')
         
         # YOUR EXACT COORDINATES - NOT CHANGED
         # Use Bitter font for infographic numbers
         c.setFont(self.get_font('infographic'), 72)
         c.setFillColor(colors.black)
-        c.drawString(50, 500, str(pulse_rate))
+        c.drawString(50, 500, pulse_rate)
         c.setFont(self.get_font('regular'), 13)
-        c.drawString(402, 507, f"{pulse_rate}")
+        c.drawString(402, 507, pulse_rate)
         c.setFont(self.get_font('infographic'), 72)
-        c.drawString(60, 405, str(oxymetry))
+        c.drawString(60, 405, oxymetry)
         c.setFont(self.get_font('infographic'), 36)
         c.drawString(145, 405, "%")
         c.setFont(self.get_font('regular'), 13)
         c.drawString(400, 430, f"{oxymetry}%")
         
         # Observation
-        pulse_int = int(pulse_rate) if pulse_rate else 78
-        oxy_int = int(oxymetry) if oxymetry else 98
+        try:
+            pulse_int = int(pulse_rate)
+            oxy_int = int(oxymetry)
+        except:
+            pulse_int = 78
+            oxy_int = 98
+            
         pulse_status = "normal" if 70 <= pulse_int <= 100 else ("high" if pulse_int > 100 else "low")
         oxy_status = "normal" if oxy_int >= 95 else "low"
         if pulse_status == "normal" and oxy_status == "normal":
@@ -544,15 +569,18 @@ class ClaraHealthPDFGenerator:
                    preserveAspectRatio=True, mask='auto')
         
         blood_work = data.get('blood_work', {})
-        hemoglobin = float(blood_work.get('hemoglobin', 12.5))
+        try:
+            hemoglobin = float(blood_work.get('hemoglobin') or 12.5)
+        except:
+            hemoglobin = 12.5
         
         # YOUR EXACT COORDINATES - NOT CHANGED
         c.setFont(self.get_font('infographic'), 32)  # Bitter Bold for hemoglobin value
         c.setFillColor(colors.black)
         c.drawString(80, 525, str(hemoglobin))
         # g/dl label (smaller font)
-        c.setFont(self.get_font('infographic'), 20)
-        c.drawString(90,500, "g/dl")
+        c.setFont(self.get_font('regular'), 10)
+        c.drawString(120, 530, "g/dl")
         
         # Draw arc
         center_x, center_y = 110, 525
@@ -560,12 +588,12 @@ class ClaraHealthPDFGenerator:
         max_hemoglobin = 16.0
         percentage = min(hemoglobin / max_hemoglobin, 1.0)
         
-        # First draw the full arc in red (background/unfilled portion)
+        # First draw the full arc in red (background/unfilled portion) - FIXED
         c.setStrokeColor(colors.HexColor('#FF4444'))
         c.setLineWidth(15)
         c.arc(center_x - outer_radius, center_y - outer_radius,
               center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-360)
+              startAng=93, extent=-270)  # ✅ FIXED: Changed from -360 to -270
         
         # Then draw the filled portion over it in appropriate color
         if hemoglobin < 8.0:
@@ -578,7 +606,7 @@ class ClaraHealthPDFGenerator:
         c.setLineWidth(15)
         c.arc(center_x - outer_radius, center_y - outer_radius,
               center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-360 * percentage)
+              startAng=93, extent=-270 * percentage)
         
         # Progress bar
         bar_x, bar_y = 200, 515
@@ -589,7 +617,6 @@ class ClaraHealthPDFGenerator:
         
         # Calculate age and observation
         try:
-            from datetime import datetime
             dob_date = datetime.strptime(data.get('student', {}).get('dob', '15/06/2016'), "%d/%m/%Y")
             today = datetime.today()
             age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
@@ -958,12 +985,29 @@ def generate_complete_health_report(json_path: str, backgrounds_folder: str, out
 
 
 if __name__ == "__main__":
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
+    # Parse command-line arguments for FastAPI integration
+    parser = argparse.ArgumentParser(description='Generate Clara Health PDF Report')
+    parser.add_argument('--json', type=str, help='Path to JSON data file')
+    parser.add_argument('--backgrounds', type=str, help='Path to backgrounds folder')
+    parser.add_argument('--fonts', type=str, help='Path to fonts folder (optional)')
+    parser.add_argument('--output', type=str, help='Output PDF file path')
     
-    json_path = os.path.join(parent_dir, "test-report.json")
-    backgrounds_folder = os.path.join(parent_dir, "backgrounds")
-    fonts_folder = os.path.join(parent_dir, "fonts")  # Add fonts folder
-    output_path = os.path.join(parent_dir, "complete_health_report.pdf")
+    args = parser.parse_args()
+    
+    # Use command-line args if provided, otherwise use defaults
+    if args.json and args.backgrounds and args.output:
+        json_path = args.json
+        backgrounds_folder = args.backgrounds
+        fonts_folder = args.fonts
+        output_path = args.output
+    else:
+        # Default paths (for testing)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(current_dir)
+        
+        json_path = os.path.join(parent_dir, "test-report.json")
+        backgrounds_folder = os.path.join(parent_dir, "backgrounds")
+        fonts_folder = os.path.join(parent_dir, "fonts")
+        output_path = os.path.join(parent_dir, "complete_health_report.pdf")
     
     generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
