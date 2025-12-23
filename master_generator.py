@@ -1,10 +1,12 @@
 """
-Clara Health PDF Generator - MASTER FILE
+Clara Health PDF Generator - MASTER FILE - PRODUCTION VERSION
 Combines ALL pages into a single PDF
-USING EXACT COORDINATES FROM YOUR WORKING FILES
+USING EXACT COORDINATES FROM LOCAL PERFECT VERSION
 WITH CUSTOM FONT SUPPORT
 PRODUCTION-READY - WORKS WITH BACKEND JSON RESPONSE
 COMMAND-LINE ARGS SUPPORT FOR FASTAPI INTEGRATION
+API INTEGRATION SUPPORT
+NO BOLD FONTS VERSION
 """
 
 from reportlab.lib.pagesizes import A4
@@ -21,8 +23,57 @@ import tempfile
 from datetime import datetime
 import argparse
 import sys
+import requests
 
 PAGE_WIDTH, PAGE_HEIGHT = A4
+
+# API Configuration
+API_BASE_URL = "https://api.clarahealtonation.in/v1"
+API_ENDPOINT = f"{API_BASE_URL}/reports/data/multiple"
+
+
+def fetch_student_data_from_api(student_ids: list, bearer_token: str):
+    """
+    Fetch student data from Clara Health API
+    
+    Args:
+        student_ids: List of student IDs to fetch
+        bearer_token: Bearer token for authentication
+        
+    Returns:
+        List of student data dictionaries
+    """
+    print(f"🔄 Fetching data for {len(student_ids)} student(s) from API...")
+    
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {bearer_token}'
+    }
+    
+    payload = {
+        'studentId': student_ids
+    }
+    
+    try:
+        response = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if not data.get('success'):
+            raise Exception(f"API returned error: {data.get('message', 'Unknown error')}")
+        
+        students_data = data.get('data', [])
+        print(f"✅ Successfully fetched data for {len(students_data)} student(s)")
+        
+        return students_data
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching data from API: {e}")
+        raise
+    except Exception as e:
+        print(f"❌ Error processing API response: {e}")
+        raise
 
 
 def parse_production_json(production_data):
@@ -122,13 +173,30 @@ def parse_production_json(production_data):
             elif sub_param_name == 'OXYMETRY in %':
                 parsed_data['vitals']['oxymetry'] = str(value) if value else '98'
             elif sub_param_name == 'HEMOGLOBIN in g/dl':
-                # Extract hemoglobin value from text or determine status
-                if 'below' in value.lower() or 'anemic' in value.lower():
-                    parsed_data['blood_work']['hemoglobin'] = '10.5'  # Placeholder low value
-                    parsed_data['final_observations']['hemoglobin_status'] = 'Low'
-                else:
-                    parsed_data['blood_work']['hemoglobin'] = '12.5'  # Placeholder normal value
-                    parsed_data['final_observations']['hemoglobin_status'] = 'Normal'
+                # Try to extract numeric hemoglobin value
+                # Production JSON has text like "Hemoglobin is within the normal range for age."
+                # Test JSON may have direct numeric values
+                try:
+                    # Try to parse as number first (for test JSON)
+                    hb_value = float(value)
+                    parsed_data['blood_work']['hemoglobin'] = str(hb_value)
+                    # Determine status based on value
+                    if hb_value < 11.0:
+                        parsed_data['final_observations']['hemoglobin_status'] = 'Low'
+                        parsed_data['blood_work']['anemia_status'] = 'Anemic'
+                    else:
+                        parsed_data['final_observations']['hemoglobin_status'] = 'Normal'
+                        parsed_data['blood_work']['anemia_status'] = 'Non-Anemic'
+                except ValueError:
+                    # Value is text (production JSON), determine from keywords
+                    if 'below' in value.lower() or 'anemic' in value.lower():
+                        parsed_data['blood_work']['hemoglobin'] = '10.5'  # Placeholder low value
+                        parsed_data['final_observations']['hemoglobin_status'] = 'Low'
+                        parsed_data['blood_work']['anemia_status'] = 'Anemic'
+                    else:
+                        parsed_data['blood_work']['hemoglobin'] = '12.5'  # Placeholder normal value
+                        parsed_data['final_observations']['hemoglobin_status'] = 'Normal'
+                        parsed_data['blood_work']['anemia_status'] = 'Non-Anemic'
         
         # GENERAL EXAMINATION
         elif param_name == 'GENERAL EXAMINATION':
@@ -317,37 +385,25 @@ class ClaraHealthPDFGenerator:
             self.custom_fonts = register_custom_fonts(fonts_folder)
     
     def get_font(self, style='regular'):
-        """Get appropriate font based on style and availability"""
+        """Get appropriate font based on style and availability - NO BOLD"""
         if not self.custom_fonts:
-            # Fallback to default fonts
+            # Fallback to default fonts - ALL REGULAR
             return {
                 'student': 'Courier',
                 'regular': 'Helvetica',
-                'bold': 'Helvetica-Bold',
-                'infographic': 'Helvetica-Bold'
+                'bold': 'Helvetica',  # Changed from Helvetica-Bold
+                'infographic': 'Helvetica'  # Changed from Helvetica-Bold
             }.get(style, 'Helvetica')
         
-        # Custom fonts available - return appropriate font
+        # Custom fonts available - return appropriate font - ALL REGULAR
         font_map = {
             'student': 'Courier',  # Courier for student info
             'regular': 'SourceSans3',  # Source Sans 3 for regular text
-            'bold': 'SourceSans3-Bold',  # Source Sans 3 Bold
-            'infographic': 'Bitter-Bold'  # Bitter Bold for big numbers
+            'bold': 'SourceSans3',  # Changed from SourceSans3-Bold
+            'infographic': 'SourceSans3'  # Changed from Bitter-Bold
         }
         
-        font_name = font_map.get(style, 'SourceSans3')
-        
-        # Check if Bitter-Bold is registered, fallback to Helvetica-Bold if not
-        if font_name == 'Bitter-Bold':
-            try:
-                # Try to use Bitter-Bold
-                pdfmetrics.getFont('Bitter-Bold')
-                return 'Bitter-Bold'
-            except:
-                # Fallback to Helvetica-Bold if Bitter not available
-                return 'Helvetica-Bold'
-        
-        return font_name
+        return font_map.get(style, 'SourceSans3')
         
     def generate_complete_report(self, data: dict, output_path: str):
         """Generate complete 11-page PDF report"""
@@ -409,42 +465,43 @@ class ClaraHealthPDFGenerator:
                    preserveAspectRatio=True, mask='auto')
         c.save()
     
-    # ========== PAGE 1: BMI - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 1: BMI - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page1(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 1 - BMI (YOUR EXACT COORDINATES)"""
+        """Generate Page 1 - BMI (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
                    preserveAspectRatio=True, mask='auto')
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
-        c.setFont(self.get_font('bold'), 13)
+        # EXACT COORDINATES FROM CODE 1
+        c.setFont(self.get_font('regular'), 13)
         c.setFillColor(colors.black)
         camp_name = str(data.get('camp_name', '') or 'School')
         c.drawString(120, 663, camp_name)
         
+        # Student Clara ID right below camp name (CODE 1 COORDINATES)
         student = data.get('student', {})
-        c.setFont(self.get_font('student'), 13)  # Courier for student info
+        clara_id = str(student.get('clara_id') or 'CLS14741')
+        c.setFont(self.get_font('student'), 13)  # Courier for clara id
+        c.drawString(95, 647, clara_id)  # Positioned below camp name
         
-        # Safe string conversion for all student fields
+        # Student information (CODE 1 COORDINATES)
+        c.setFont(self.get_font('student'), 13)  # Courier for student info
         name = str(student.get('name') or 'N/A')
         dob = str(student.get('dob') or '')
         sex = str(student.get('sex') or '')
         student_class = str(student.get('class') or '')
         section = str(student.get('section') or '')
         roll_no = str(student.get('roll_no') or '')
-        admission_no = str(student.get('admission_no') or '')
-        clara_id = str(student.get('clara_id') or '')
         
         c.drawString(78, 615, name)
         c.drawString(78, 598, dob)
         c.drawString(78, 581, sex)
-        c.drawString(252, 615, student_class)
-        c.drawString(252, 598, section)
-        c.drawString(252, 581, roll_no)
-        c.drawString(481, 615, admission_no)
-        c.drawString(413, 598, clara_id)
+        c.drawString(398, 615, student_class)
+        c.drawString(398, 598, section)
+        c.drawString(398, 581, roll_no)
+        # Clara ID moved to top, removed from right side
         
         measurements = data.get('measurements', {})
         c.setFont(self.get_font('regular'), 13)  # Source Sans 3 for measurements
@@ -458,23 +515,27 @@ class ClaraHealthPDFGenerator:
         c.drawString(92, 487, f"{weight} kg")
         c.drawString(92, 470, bmi)
         
-        # BIG BMI VALUE in green box (right side) - Bitter Bold for infographic
+        # BIG BMI VALUE in green box (right side) - CODE 1 COORDINATES
         c.setFont(self.get_font('infographic'), 45)
         c.setFillColor(colors.black)
-        c.drawString(418, 495, bmi)  # Big BMI number
+        c.drawString(418, 497, bmi)  # Big BMI number
         
-        # BMI scale highlight
+        # "BMI" text right next to the big BMI value (CODE 1 FEATURE)
+        c.setFont(self.get_font('regular'), 16)  # Smaller font for "BMI" label
+        c.drawString(525, 497, "BMI")  # Positioned to the right of the big number
+        
+        # BMI scale highlight (CODE 1 COORDINATES)
         try:
             bmi_float = float(bmi)
         except:
             bmi_float = 16.5
             
         box_positions = {
-            'underweight': (70, 340, 160, 355),
-            'normal': (254, 402, 290, 412),
-            'overweight': (397, 402, 433, 412),
-            'obese': (542, 402, 578, 412),
-            'morbidly_obese': (687, 402, 723, 412)
+            'underweight': (70, 339, 160, 355),      # CODE 1 COORDINATES
+            'normal': (160, 339, 255, 355),          # CODE 1 COORDINATES
+            'overweight': (255, 339, 350, 355),      # CODE 1 COORDINATES
+            'obese': (350, 339, 445, 355),           # CODE 1 COORDINATES
+            'morbidly_obese': (445, 339, 540, 355)   # CODE 1 COORDINATES
         }
         if bmi_float < 18.5:
             category = 'underweight'
@@ -491,7 +552,7 @@ class ClaraHealthPDFGenerator:
         c.setLineWidth(2)
         c.rect(x1, y1, x2 - x1, y2 - y1, fill=0, stroke=1)
         
-        # Observation
+        # Observation (CODE 1 COORDINATES)
         if bmi_float < 18.5:
             observation = "Underweight"
         elif 18.5 <= bmi_float < 25:
@@ -502,15 +563,15 @@ class ClaraHealthPDFGenerator:
             observation = "Obese"
         else:
             observation = "Morbidly Obese"
-        c.setFont(self.get_font('bold'), 13)
+        c.setFont(self.get_font('regular'), 13)
         c.drawString(118, 303, observation)
         
         c.save()
     
-    # ========== PAGE 2: VITALS - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 2: VITALS - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page2(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 2 - Vitals (YOUR EXACT COORDINATES)"""
+        """Generate Page 2 - Vitals (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -520,11 +581,10 @@ class ClaraHealthPDFGenerator:
         pulse_rate = str(vitals.get('pulse_rate') or '78')
         oxymetry = str(vitals.get('oxymetry') or '98')
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
-        # Use Bitter font for infographic numbers
+        # EXACT COORDINATES FROM CODE 1
         c.setFont(self.get_font('infographic'), 72)
         c.setFillColor(colors.black)
-        c.drawString(50, 500, pulse_rate)
+        c.drawString(50, 505, pulse_rate)
         c.setFont(self.get_font('regular'), 13)
         c.drawString(402, 507, pulse_rate)
         c.setFont(self.get_font('infographic'), 72)
@@ -554,15 +614,15 @@ class ClaraHealthPDFGenerator:
             observation = "Low Oxygen Level"
         else:
             observation = "Check Vitals"
-        c.setFont(self.get_font('bold'), 13)
+        c.setFont(self.get_font('regular'), 13)
         c.drawString(135, 342, observation)
         
         c.save()
     
-    # ========== PAGE 3: HEMOGLOBIN - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 3: HEMOGLOBIN - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page3(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 3 - Hemoglobin (YOUR EXACT COORDINATES)"""
+        """Generate Page 3 - Hemoglobin (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -573,27 +633,20 @@ class ClaraHealthPDFGenerator:
             hemoglobin = float(blood_work.get('hemoglobin') or 12.5)
         except:
             hemoglobin = 12.5
+        anemia_status = blood_work.get('anemia_status', 'Non-Anemic')  # Get status from backend
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
-        c.setFont(self.get_font('infographic'), 32)  # Bitter Bold for hemoglobin value
-        c.setFillColor(colors.black)
-        c.drawString(80, 525, str(hemoglobin))
-        # g/dl label (smaller font)
-        c.setFont(self.get_font('regular'), 10)
-        c.drawString(120, 530, "g/dl")
-        
-        # Draw arc
+        # Draw arc (CODE 1 COORDINATES)
         center_x, center_y = 110, 525
         outer_radius = 50
         max_hemoglobin = 16.0
         percentage = min(hemoglobin / max_hemoglobin, 1.0)
         
-        # First draw the full arc in red (background/unfilled portion) - FIXED
+        # First draw the full arc in red (background/unfilled portion)
         c.setStrokeColor(colors.HexColor('#FF4444'))
         c.setLineWidth(15)
         c.arc(center_x - outer_radius, center_y - outer_radius,
               center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-270)  # ✅ FIXED: Changed from -360 to -270
+              startAng=93, extent=-360)
         
         # Then draw the filled portion over it in appropriate color
         if hemoglobin < 8.0:
@@ -606,14 +659,31 @@ class ClaraHealthPDFGenerator:
         c.setLineWidth(15)
         c.arc(center_x - outer_radius, center_y - outer_radius,
               center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-270 * percentage)
+              startAng=93, extent=-360 * percentage)
         
-        # Progress bar
-        bar_x, bar_y = 200, 515
-        bar_width, bar_height = 425, 8
-        fill_width = bar_width * percentage
-        c.setFillColor(arc_color)
-        c.rect(bar_x, bar_y, fill_width, bar_height, fill=1, stroke=0)
+        # Display anemia status inside the circle (CODE 1 FEATURE)
+        c.setFont(self.get_font('infographic'), 16)  # Smaller font to fit status text
+        c.setFillColor(colors.black)
+        # Center the text inside the circle
+        text_width = c.stringWidth(anemia_status, self.get_font('infographic'), 16)
+        c.drawString(center_x - text_width/2, center_y - 8, anemia_status)
+        
+        # Blood drop image slider (CODE 1 FEATURE - replaces the green bar)
+        bar_x, bar_y = 207, 509
+        bar_width = 378
+        
+        # Calculate position for blood drop based on percentage
+        blood_x = bar_x + (bar_width * percentage) - 10  # -10 to center the icon
+        blood_y = bar_y - 5  # Slightly below the bar line
+        
+        # Draw the blood drop image
+        try:
+            blood_image_path = os.path.join(self.backgrounds_folder, 'Blood.png')
+            blood_image = ImageReader(Image.open(blood_image_path))
+            c.drawImage(blood_image, blood_x, blood_y, width=55, height=55,
+                       preserveAspectRatio=True, mask='auto')
+        except Exception as e:
+            print(f"⚠️  Error loading Blood.png: {e}")
         
         # Calculate age and observation
         try:
@@ -641,10 +711,10 @@ class ClaraHealthPDFGenerator:
                 observation = "Moderately Low"
             else:
                 observation = "Severely Low"
-        c.setFont(self.get_font('bold'), 13)
+        c.setFont(self.get_font('regular'), 13)
         c.drawString(420, 423, observation)
         
-        # Severity box
+        # Severity box (CODE 1 COORDINATES)
         box_positions = {
             'mild': (68, 755, 649, 827),
             'moderate': (68, 678, 649, 750),
@@ -676,10 +746,10 @@ class ClaraHealthPDFGenerator:
         
         c.save()
     
-    # ========== PAGE 4: HYGIENE - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 4: HYGIENE - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page4(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 4 - Hygiene (YOUR EXACT COORDINATES)"""
+        """Generate Page 4 - Hygiene (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -687,47 +757,47 @@ class ClaraHealthPDFGenerator:
         
         hygiene = data.get('hygiene', {})
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
-        scale_positions = {'Poor': 125, 'Fair': 310, 'Good': 495, 'Excellent': 680}
+        # EXACT COORDINATES FROM CODE 1
+        scale_positions = {'Poor': 340, 'Fair': 410, 'Good': 480}
         
-        # Nail hygiene
+        # Nail hygiene (CODE 1 COORDINATES)
         nail_hygiene = hygiene.get('nail_hygiene', 'Poor')
-        marker_x = scale_positions.get(nail_hygiene, 125)
-        marker_y = 474
+        marker_x = scale_positions.get(nail_hygiene, 340)
+        marker_y = 450
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(2)
-        c.circle(marker_x, marker_y, 12, fill=1, stroke=1)
+        c.circle(marker_x, marker_y, 8, fill=1, stroke=1)
         c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(marker_x, marker_y, 8, fill=1, stroke=0)
-        c.setFont(self.get_font('bold'), 13)
+        c.circle(marker_x, marker_y, 6, fill=1, stroke=0)
+        c.setFont(self.get_font('regular'), 13)
         c.setFillColor(colors.black)
-        c.drawString(148, 440, nail_hygiene)
+        c.drawString(110, 474, nail_hygiene)
         c.setFont(self.get_font('regular'), 12)
-        c.drawString(155, 410, hygiene.get('nail_observation', 'Maintain proper Nail Hygiene'))
+        c.drawString(150, 410, hygiene.get('nail_observation', 'Maintain proper Nail Hygiene'))
         
-        # Hair hygiene
+        # Hair hygiene (CODE 1 COORDINATES)
         hair_hygiene = hygiene.get('hair_hygiene', 'Poor')
-        marker_x = scale_positions.get(hair_hygiene, 125)
-        marker_y = 335
+        marker_x = scale_positions.get(hair_hygiene, 340)
+        marker_y = 308
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(2)
-        c.circle(marker_x, marker_y, 12, fill=1, stroke=1)
+        c.circle(marker_x, marker_y, 8, fill=1, stroke=1)
         c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(marker_x, marker_y, 8, fill=1, stroke=0)
-        c.setFont(self.get_font('bold'), 13)
+        c.circle(marker_x, marker_y, 6, fill=1, stroke=0)
+        c.setFont(self.get_font('regular'), 13)
         c.setFillColor(colors.black)
-        c.drawString(155, 301, hair_hygiene)
+        c.drawString(117, 332, hair_hygiene)
         c.setFont(self.get_font('regular'), 12)
-        c.drawString(155, 270, hygiene.get('hair_observation', 'Maintain proper Hair Hygiene'))
+        c.drawString(150, 270, hygiene.get('hair_observation', 'Maintain proper Hair Hygiene'))
         
         c.save()
     
-    # ========== PAGE 5: MEDICAL - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 5: MEDICAL - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page5(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 5 - Medical (YOUR EXACT COORDINATES)"""
+        """Generate Page 5 - Medical (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -737,17 +807,17 @@ class ClaraHealthPDFGenerator:
         c.setFont(self.get_font('regular'), 11)
         c.setFillColor(colors.black)
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
+        # EXACT COORDINATES FROM CODE 1
         table_rows = [
-            {'key': 'pallor', 'status_x': 230, 'status_y': 595, 'comment_x': 320, 'comment_y': 692},
-            {'key': 'icterus', 'status_x': 230, 'status_y': 565, 'comment_x': 320, 'comment_y': 565},
-            {'key': 'clubbing', 'status_x': 230, 'status_y': 535, 'comment_x': 320, 'comment_y': 535},
-            {'key': 'lymphadenopathy', 'status_x': 230, 'status_y': 505, 'comment_x': 320, 'comment_y': 505},
-            {'key': 'allergy', 'status_x': 230, 'status_y': 475, 'comment_x': 320, 'comment_y': 475},
-            {'key': 'skin', 'status_x': 230, 'status_y': 445, 'comment_x': 320, 'comment_y': 445},
-            {'key': 'bone_and_joints', 'status_x': 230, 'status_y': 415, 'comment_x': 320, 'comment_y': 415},
-            {'key': 'puberty_changes', 'status_x': 230, 'status_y': 385, 'comment_x': 320, 'comment_y': 385},
-            {'key': 'cyanosis', 'status_x': 230, 'status_y': 355, 'comment_x': 320, 'comment_y': 355}
+            {'key': 'pallor', 'status_x': 180, 'status_y': 595, 'comment_x': 235, 'comment_y': 595},
+            {'key': 'icterus', 'status_x': 180, 'status_y': 565, 'comment_x': 235, 'comment_y': 565},
+            {'key': 'clubbing', 'status_x': 180, 'status_y': 535, 'comment_x': 235, 'comment_y': 535},
+            {'key': 'lymphadenopathy', 'status_x': 180, 'status_y': 505, 'comment_x': 235, 'comment_y': 505},
+            {'key': 'allergy', 'status_x': 180, 'status_y': 475, 'comment_x': 235, 'comment_y': 475},
+            {'key': 'skin', 'status_x': 180, 'status_y': 445, 'comment_x': 235, 'comment_y': 445},
+            {'key': 'bone_and_joints', 'status_x': 180, 'status_y': 415, 'comment_x': 235, 'comment_y': 415},
+            {'key': 'puberty_changes', 'status_x': 180, 'status_y': 385, 'comment_x': 235, 'comment_y': 385},
+            {'key': 'cyanosis', 'status_x': 180, 'status_y': 355, 'comment_x': 235, 'comment_y': 355}
         ]
         
         for row in table_rows:
@@ -760,10 +830,10 @@ class ClaraHealthPDFGenerator:
         
         c.save()
     
-    # ========== PAGE 6: ENT - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 6: ENT - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page6(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 6 - ENT (YOUR EXACT COORDINATES)"""
+        """Generate Page 6 - ENT (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -771,7 +841,7 @@ class ClaraHealthPDFGenerator:
         
         ent = data.get('ent', {})
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
+        # EXACT COORDINATES FROM CODE 1
         hearing_y, ear_y, throat_y, nose_y = 509, 509, 396, 396
         hearing_text_y, ear_text_y, throat_text_y, nose_text_y = 490, 490, 378, 378
         hearing_text_x, ear_text_x, throat_text_x, nose_text_x = 140, 410, 140, 410
@@ -783,7 +853,7 @@ class ClaraHealthPDFGenerator:
         c.setFillColor(colors.black)
         
         # Hearing
-        hearing_x = scale_positions_left.get(ent.get('hearing', 'poor'), 145)
+        hearing_x = scale_positions_left.get(ent.get('hearing', 'Normal'), 269)
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(1.5)
@@ -794,7 +864,7 @@ class ClaraHealthPDFGenerator:
         c.drawString(hearing_text_x, hearing_text_y, "No Abnormalities found")
         
         # Ear
-        ear_x = scale_positions_right.get(ent.get('ear', 'poor'), 416)
+        ear_x = scale_positions_right.get(ent.get('ear', 'Normal'), 540)
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(1.5)
@@ -805,7 +875,7 @@ class ClaraHealthPDFGenerator:
         c.drawString(ear_text_x, ear_text_y, "No Abnormalities found")
         
         # Throat
-        throat_x = scale_positions_left.get(ent.get('throat', 'normal'), 145)
+        throat_x = scale_positions_left.get(ent.get('throat', 'Normal'), 269)
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(1.5)
@@ -816,7 +886,7 @@ class ClaraHealthPDFGenerator:
         c.drawString(throat_text_x, throat_text_y, "No Abnormalities found")
         
         # Nose
-        nose_x = scale_positions_right.get(ent.get('nose', 'normal'), 416)
+        nose_x = scale_positions_right.get(ent.get('nose', 'Normal'), 540)
         c.setFillColor(colors.white)
         c.setStrokeColor(colors.HexColor('#333333'))
         c.setLineWidth(1.5)
@@ -828,10 +898,10 @@ class ClaraHealthPDFGenerator:
         
         c.save()
     
-    # ========== PAGE 8: DENTAL TABLE - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 8: DENTAL TABLE - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page8(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 8 - Dental (YOUR EXACT COORDINATES)"""
+        """Generate Page 8 - Dental (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -841,16 +911,16 @@ class ClaraHealthPDFGenerator:
         c.setFont(self.get_font('regular'), 11)
         c.setFillColor(colors.black)
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
+        # EXACT COORDINATES FROM CODE 1
         table_rows = [
-            {'key': 'pit_fissure_caries', 'status_x': 230, 'status_y': 520, 'comment_x': 322, 'comment_y': 520},
-            {'key': 'nursing_bottle_caries', 'status_x': 230, 'status_y': 490, 'comment_x': 322, 'comment_y': 490},
-            {'key': 'gum_inflammation', 'status_x': 230, 'status_y': 462, 'comment_x': 322, 'comment_y': 462},
-            {'key': 'bleeding', 'status_x': 230, 'status_y': 432, 'comment_x': 322, 'comment_y': 432},
-            {'key': 'tarter', 'status_x': 230, 'status_y': 402, 'comment_x': 322, 'comment_y': 402},
-            {'key': 'plaque', 'status_x': 230, 'status_y': 372, 'comment_x': 322, 'comment_y': 372},
-            {'key': 'oral_hygiene', 'status_x': 230, 'status_y': 342, 'comment_x': 322, 'comment_y': 342},
-            {'key': 'dentist_visit_recommendation', 'status_x': 230, 'status_y': 315, 'comment_x': 322, 'comment_y': 315}
+            {'key': 'pit_fissure_caries', 'status_x': 225, 'status_y': 520, 'comment_x': 290, 'comment_y': 520},
+            {'key': 'nursing_bottle_caries', 'status_x': 225, 'status_y': 490, 'comment_x': 290, 'comment_y': 490},
+            {'key': 'gum_inflammation', 'status_x': 225, 'status_y': 462, 'comment_x': 290, 'comment_y': 462},
+            {'key': 'bleeding', 'status_x': 225, 'status_y': 432, 'comment_x': 290, 'comment_y': 432},
+            {'key': 'tartar', 'status_x': 225, 'status_y': 402, 'comment_x': 290, 'comment_y': 402},
+            {'key': 'plaque', 'status_x': 225, 'status_y': 372, 'comment_x': 290, 'comment_y': 372},
+            {'key': 'oral_hygiene', 'status_x': 225, 'status_y': 342, 'comment_x': 290, 'comment_y': 342},
+            {'key': 'dentist_visit_recommendation', 'status_x': 225, 'status_y': 315, 'comment_x': 290, 'comment_y': 315}
         ]
         
         for row in table_rows:
@@ -868,10 +938,10 @@ class ClaraHealthPDFGenerator:
         
         c.save()
     
-    # ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM YOUR FILE ==========
+    # ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM CODE 1 ==========
     
     def _generate_page9(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 9 - Final Observations (YOUR EXACT COORDINATES)"""
+        """Generate Page 9 - Final Observations (EXACT COORDINATES FROM CODE 1)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -883,7 +953,7 @@ class ClaraHealthPDFGenerator:
         hygiene = data.get("hygiene", {})
         final_obs = data.get("final_observations", {})
         
-        # YOUR EXACT COORDINATES - NOT CHANGED
+        # EXACT COORDINATES FROM CODE 1
         coordinates = {
             'bmi_value': (54, 565),
             'bmi_status': (222, 562),
@@ -895,16 +965,19 @@ class ClaraHealthPDFGenerator:
             'hemo_status': (470, 404),
             'nail_hygiene': (160, 274),
             'hair_hygiene': (160, 253),
-            'medical_status': (470, 253),
+            'medical_status': (480, 253),
             'dental_status': (208, 112),
         }
         
         c.setFillColor(colors.black)
-        c.setFont(self.get_font('infographic'), 23)  # Bitter Bold for BMI value
+        c.setFont(self.get_font('infographic'), 23)
         c.drawString(coordinates['bmi_value'][0], coordinates['bmi_value'][1], str(measurements.get('bmi', '')))
         
-        c.setFont(self.get_font('bold'), 11)
-        bmi = float(measurements.get('bmi', 0))
+        c.setFont(self.get_font('regular'), 11)
+        try:
+            bmi = float(measurements.get('bmi', 0))
+        except:
+            bmi = 0
         if bmi < 18.5:
             bmi_status = "Underweight"
         elif 18.5 <= bmi < 25:
@@ -916,22 +989,22 @@ class ClaraHealthPDFGenerator:
         c.drawCentredString(coordinates['bmi_status'][0], coordinates['bmi_status'][1], bmi_status)
         c.drawCentredString(coordinates['ent_status'][0], coordinates['ent_status'][1], final_obs.get('ent_status', 'Normal'))
         
-        c.setFont(self.get_font('infographic'), 23)  # Bitter Bold for pulse/oxy values
+        c.setFont(self.get_font('infographic'), 23)
         c.drawString(coordinates['pulse_value'][0], coordinates['pulse_value'][1], str(vitals.get('pulse_rate', '')))
         c.drawString(coordinates['oxy_value'][0], coordinates['oxy_value'][1], f"{vitals.get('oxymetry', '')}%")
         
-        c.setFont(self.get_font('bold'), 11)
+        c.setFont(self.get_font('regular'), 11)
         c.drawCentredString(coordinates['vitals_status'][0], coordinates['vitals_status'][1], final_obs.get('vitals_status', 'Normal'))
         
-        c.setFont(self.get_font('infographic'), 23)  # Bitter Bold for hemoglobin value
+        c.setFont(self.get_font('infographic'), 23)
         c.drawString(coordinates['hemo_value'][0], coordinates['hemo_value'][1], str(blood_work.get('hemoglobin', '')))
         
-        c.setFont(self.get_font('bold'), 11)
+        c.setFont(self.get_font('regular'), 11)
         c.drawCentredString(coordinates['hemo_status'][0], coordinates['hemo_status'][1], final_obs.get('hemoglobin_status', 'Normal'))
-        c.setFont(self.get_font('regular'), 11)  # Source Sans 3 for hygiene text
+        c.setFont(self.get_font('regular'), 11)
         c.drawString(coordinates['nail_hygiene'][0], coordinates['nail_hygiene'][1], hygiene.get('nail_hygiene', ''))
         c.drawString(coordinates['hair_hygiene'][0], coordinates['hair_hygiene'][1], hygiene.get('hair_hygiene', ''))
-        c.setFont(self.get_font('bold'), 11)
+        c.setFont(self.get_font('regular'), 11)
         c.drawCentredString(coordinates['medical_status'][0], coordinates['medical_status'][1], final_obs.get('medical_status', 'Normal'))
         c.drawCentredString(coordinates['dental_status'][0], coordinates['dental_status'][1], final_obs.get('dental_status', 'Poor'))
         
@@ -984,24 +1057,105 @@ def generate_complete_health_report(json_path: str, backgrounds_folder: str, out
     print(f"\n📄 Output: {output_path}\n")
 
 
+def generate_reports_from_api(student_ids: list, bearer_token: str, backgrounds_folder: str, 
+                               output_dir: str, fonts_folder: str = None):
+    """
+    Generate health reports by fetching data from API
+    
+    Args:
+        student_ids: List of student IDs to generate reports for
+        bearer_token: Bearer token for API authentication
+        backgrounds_folder: Path to backgrounds folder
+        output_dir: Directory to save generated PDFs
+        fonts_folder: Path to fonts folder (optional)
+    
+    Returns:
+        List of generated PDF file paths
+    """
+    print("\n")
+    print("🏥" * 30)
+    print("CLARA HEALTH - API REPORT GENERATOR")
+    print("🏥" * 30)
+    print("\n")
+    
+    # Fetch data from API
+    students_data = fetch_student_data_from_api(student_ids, bearer_token)
+    
+    if not students_data:
+        print("❌ No student data received from API")
+        return []
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate reports for each student
+    generated_files = []
+    generator = ClaraHealthPDFGenerator(backgrounds_folder, fonts_folder)
+    
+    for student_raw_data in students_data:
+        try:
+            # Parse student data
+            data = parse_production_json(student_raw_data)
+            
+            # Generate output filename
+            student_name = data.get('student', {}).get('name', 'Unknown')
+            clara_id = data.get('student', {}).get('clara_id', 'Unknown')
+            safe_filename = f"{clara_id}_{student_name.replace(' ', '_')}_health_report.pdf"
+            output_path = os.path.join(output_dir, safe_filename)
+            
+            # Generate report
+            print(f"\n📋 Generating report for: {student_name} ({clara_id})")
+            generator.generate_complete_report(data, output_path)
+            
+            generated_files.append(output_path)
+            print(f"✅ Report saved: {output_path}")
+            
+        except Exception as e:
+            print(f"❌ Error generating report for student: {e}")
+            continue
+    
+    print("\n")
+    print("✨" * 30)
+    print(f"GENERATED {len(generated_files)} REPORT(S)")
+    print("✨" * 30)
+    print("\n")
+    
+    return generated_files
+
+
 if __name__ == "__main__":
     # Parse command-line arguments for FastAPI integration
     parser = argparse.ArgumentParser(description='Generate Clara Health PDF Report')
     parser.add_argument('--json', type=str, help='Path to JSON data file')
+    parser.add_argument('--student-ids', type=str, help='Comma-separated student IDs to fetch from API')
+    parser.add_argument('--bearer-token', type=str, help='Bearer token for API authentication')
     parser.add_argument('--backgrounds', type=str, help='Path to backgrounds folder')
     parser.add_argument('--fonts', type=str, help='Path to fonts folder (optional)')
-    parser.add_argument('--output', type=str, help='Output PDF file path')
+    parser.add_argument('--output', type=str, help='Output PDF file path or directory')
     
     args = parser.parse_args()
     
-    # Use command-line args if provided, otherwise use defaults
-    if args.json and args.backgrounds and args.output:
+    # API mode: Fetch from API and generate reports
+    if args.student_ids and args.bearer_token and args.backgrounds and args.output:
+        student_ids = [int(sid.strip()) for sid in args.student_ids.split(',')]
+        generate_reports_from_api(
+            student_ids=student_ids,
+            bearer_token=args.bearer_token,
+            backgrounds_folder=args.backgrounds,
+            output_dir=args.output,
+            fonts_folder=args.fonts
+        )
+    
+    # File mode: Use command-line args if provided
+    elif args.json and args.backgrounds and args.output:
         json_path = args.json
         backgrounds_folder = args.backgrounds
         fonts_folder = args.fonts
         output_path = args.output
+        generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
+    
+    # Default mode: Use test paths
     else:
-        # Default paths (for testing)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         parent_dir = os.path.dirname(current_dir)
         
@@ -1009,5 +1163,5 @@ if __name__ == "__main__":
         backgrounds_folder = os.path.join(parent_dir, "backgrounds")
         fonts_folder = os.path.join(parent_dir, "fonts")
         output_path = os.path.join(parent_dir, "complete_health_report.pdf")
-    
-    generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
+        
+        generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
