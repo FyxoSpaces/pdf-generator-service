@@ -2,6 +2,7 @@
 Clara Health PDF Generator - FastAPI Microservice
 Standalone service for generating health report PDFs
 WITH S3 UPLOAD INTEGRATION
+FIXED: /api/generate-by-ids now uses /multiple endpoint
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -78,6 +79,12 @@ class HealthCheckResponse(BaseModel):
     timestamp: str
     dependencies: Dict[str, bool]
 
+class StudentIdsRequest(BaseModel):
+    """Request model for student IDs"""
+    studentIds: List[int]
+    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"  # FIXED: Changed to /multiple
+    authToken: Optional[str] = None
+
 # Helper functions
 def check_dependencies() -> Dict[str, bool]:
     """Check if all required Python packages are installed"""
@@ -119,12 +126,14 @@ async def root():
     """Root endpoint"""
     return {
         "service": "Clara Health PDF Generator",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "running",
         "endpoints": {
             "health": "/health",
             "generate": "/api/generate-pdf",
             "batch": "/api/generate-batch",
+            "generate-and-upload": "/api/generate-and-upload",
+            "generate-by-ids": "/api/generate-by-ids",
             "download": "/api/download/{filename}"
         }
     }
@@ -144,7 +153,7 @@ async def health_check():
     return HealthCheckResponse(
         status="healthy" if (all_healthy and folders_exist) else "unhealthy",
         service="Clara Health PDF Generator",
-        version="1.0.0",
+        version="2.0.0",
         timestamp=datetime.now().isoformat(),
         dependencies=dependencies
     )
@@ -391,7 +400,7 @@ async def list_generated_reports():
             detail=f"Error listing files: {str(e)}"
         )
 
-# ==================== NEW S3 INTEGRATED ENDPOINTS ====================
+# ==================== S3 INTEGRATED ENDPOINTS ====================
 
 @app.post("/api/generate-and-upload")
 async def generate_and_upload_pdf(request: StudentReportRequest, background_tasks: BackgroundTasks):
@@ -497,33 +506,6 @@ async def generate_and_upload_batch(request: BatchReportRequest, background_task
             { "data": { "student": {...}, "campData": [...], "school": {...} } },
             { "data": { "student": {...}, "campData": [...], "school": {...} } }
         ]
-    }
-    
-    Response:
-    {
-        "success": true,
-        "message": "Batch processing completed",
-        "data": {
-            "total": 10,
-            "successCount": 9,
-            "failedCount": 1,
-            "results": [
-                {
-                    "studentId": 4,
-                    "studentName": "K. Jagadeeshwari",
-                    "claraId": "CLARA-S1-4",
-                    "pdfUrl": "https://...",
-                    "s3Key": "pdfs/CLARA-S1-4_health_report.pdf",
-                    "status": "success"
-                }
-            ],
-            "errors": [
-                {
-                    "studentName": "Student X",
-                    "error": "Missing biometrics data"
-                }
-            ]
-        }
     }
     """
     try:
@@ -639,41 +621,37 @@ async def check_s3_access():
             detail=result.get('error', 'S3 bucket not accessible')
         )
 
-# ==================== NEW ENDPOINT: GENERATE BY STUDENT IDS ====================
-
-class StudentIdsRequest(BaseModel):
-    """Request model for student IDs"""
-    studentIds: List[int]
-    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data"
-    authToken: Optional[str] = None  # Add auth token support
+# ==================== FIXED: GENERATE BY STUDENT IDS ====================
 
 @app.post("/api/generate-by-ids")
 async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_tasks: BackgroundTasks):
     """
-    Generate PDFs by fetching data from Node.js API for each student ID
+    Generate PDFs by fetching data from Node.js API (BATCH MODE - FIXED)
     
-    Node.js sends student IDs, Python fetches data and generates PDFs
+    Fetches ALL students in ONE request to the /multiple endpoint
     
     Request:
     {
-        "studentIds": [1, 2, 3, 4],
-        "nodeApiUrl": "https://api.clarahealtonation.in/v1/reports/data"  // optional
+        "studentIds": [7, 8, 9],
+        "nodeApiUrl": "https://api.clarahealtonation.in/v1/reports/data/multiple",
+        "authToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
     }
     
     Response:
     {
         "success": true,
+        "message": "PDF generation completed",
         "data": {
-            "total": 4,
-            "successCount": 4,
+            "total": 3,
+            "successCount": 3,
             "failedCount": 0,
             "results": [
                 {
-                    "studentId": 1,
-                    "studentName": "K. Jagadeeshwari",
-                    "claraId": "CLARA-S1-4",
-                    "pdfUrl": "https://s3...",
-                    "s3Key": "pdfs/...",
+                    "studentId": 7,
+                    "studentName": "Student Name",
+                    "claraId": "CLARA-S1-7",
+                    "pdfUrl": "https://...",
+                    "s3Key": "...",
                     "status": "success"
                 }
             ],
@@ -686,65 +664,80 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
         
         print(f"\n📦 [GENERATE BY IDS] Received request for {len(request.studentIds)} students")
         print(f"🔗 Node API URL: {request.nodeApiUrl}")
+        print(f"👥 Student IDs: {request.studentIds}")
         
+        # Step 1: Fetch ALL students data in ONE request
+        print(f"\n📡 Fetching data for all students from Node API...")
+        
+        headers = {'Content-Type': 'application/json'}
+        if request.authToken:
+            headers['Authorization'] = f"Bearer {request.authToken}"
+            print(f"🔑 Using auth token: {request.authToken[:20]}...")
+        else:
+            print(f"⚠️  WARNING: No auth token provided!")
+        
+        payload = {
+            'studentId': request.studentIds  # Send as array
+        }
+        
+        print(f"📤 Request payload: {payload}")
+        print(f"📤 Request headers: {headers}")
+        
+        # POST request to /multiple endpoint
+        response = requests.post(
+            request.nodeApiUrl, 
+            headers=headers, 
+            json=payload,
+            timeout=30
+        )
+        
+        print(f"📥 Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            raise Exception(f"Node API returned status {response.status_code}: {response.text}")
+        
+        api_response = response.json()
+        
+        # Validate response
+        if not api_response.get('success'):
+            raise Exception(f"Node API error: {api_response.get('message', 'Unknown error')}")
+        
+        students_data = api_response.get('data', [])
+        
+        if not students_data:
+            raise Exception("No student data returned from Node API")
+        
+        print(f"✅ Fetched data for {len(students_data)} student(s)")
+        
+        # Step 2: Generate PDFs for each student
         results = {
             "success": [],
             "failed": []
         }
         
-        for idx, student_id in enumerate(request.studentIds, 1):
+        for idx, student_raw_data in enumerate(students_data, 1):
             try:
-                print(f"\n[{idx}/{len(request.studentIds)}] Processing Student ID: {student_id}")
+                print(f"\n[{idx}/{len(students_data)}] Processing...")
                 
-                # Step 1: Fetch data from Node.js API
-                # Remove trailing slash from base URL if present
-                base_url = request.nodeApiUrl.rstrip('/')
-                node_url = f"{base_url}/{student_id}"
-                print(f"📡 Fetching data from: {node_url}")
-                
-                # Add authorization header if token provided
-                headers = {}
-                if request.authToken:
-                    headers['Authorization'] = f"Bearer {request.authToken}"
-                    print(f"🔑 Using auth token: {request.authToken[:20]}...")  # Show first 20 chars
-                else:
-                    print(f"⚠️  WARNING: No auth token provided!")
-                
-                print(f"📤 Request headers: {headers}")
-                
-                response = requests.get(node_url, headers=headers, timeout=30)
-                
-                print(f"📥 Response status: {response.status_code}")
-                
-                if response.status_code != 200:
-                    raise Exception(f"Node API returned status {response.status_code}")
-                
-                student_data = response.json()
-                
-                # Validate response
-                if not student_data.get('success') or not student_data.get('data'):
-                    raise Exception("Invalid response from Node API")
-                
-                print(f"✅ Data fetched successfully for student ID {student_id}")
-                
-                # Extract student info for logging
-                student_info = student_data['data'].get('student', {})
+                # Extract student info
+                student_info = student_raw_data.get('data', {}).get('student', {})
+                student_id = student_info.get('id', 0)
                 student_name = student_info.get('name', 'Unknown')
                 clara_id = student_info.get('claraId', 'unknown')
                 
-                print(f"📋 Student: {student_name} ({clara_id})")
+                print(f"📋 Student ID {student_id}: {student_name} ({clara_id})")
                 
-                # Step 2: Generate output filename
+                # Generate output filename
                 output_filename = get_output_filename(student_info)
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 
-                # Step 3: Create temporary JSON file
+                # Create temporary JSON file
                 temp_json_path = os.path.join(TEMP_FOLDER, f"temp_{clara_id}_{datetime.now().timestamp()}.json")
                 with open(temp_json_path, 'w') as f:
-                    json.dump(student_data, f)
+                    json.dump(student_raw_data, f)
                 
-                # Step 4: Generate PDF
-                print(f"🎨 Generating PDF for {student_name}...")
+                # Generate PDF
+                print(f"🎨 Generating PDF...")
                 generate_complete_health_report(
                     json_path=temp_json_path,
                     backgrounds_folder=BACKGROUNDS_FOLDER,
@@ -756,7 +749,7 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                 if os.path.exists(temp_json_path):
                     os.remove(temp_json_path)
                 
-                # Step 5: Upload to S3
+                # Upload to S3
                 print(f"📤 Uploading to S3...")
                 s3_result = s3_uploader.upload_pdf(
                     file_path=output_path,
@@ -778,24 +771,18 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                     if os.path.exists(output_path):
                         os.remove(output_path)
                     
-                    print(f"✅ [{idx}/{len(request.studentIds)}] Success: {student_name}")
+                    print(f"✅ [{idx}/{len(students_data)}] Success: {student_name}")
                 else:
                     raise Exception(s3_result.get('error', 'S3 upload failed'))
                 
-            except requests.RequestException as e:
-                error_msg = f"Failed to fetch data from Node API: {str(e)}"
-                print(f"❌ [{idx}/{len(request.studentIds)}] {error_msg}")
-                results["failed"].append({
-                    "studentId": student_id,
-                    "error": error_msg,
-                    "status": "failed"
-                })
-                
             except Exception as e:
                 error_msg = str(e)
-                print(f"❌ [{idx}/{len(request.studentIds)}] Failed: {error_msg}")
+                print(f"❌ [{idx}/{len(students_data)}] Failed: {error_msg}")
+                
                 results["failed"].append({
-                    "studentId": student_id,
+                    "studentId": student_info.get('id', 0),
+                    "studentName": student_info.get('name', 'Unknown'),
+                    "claraId": student_info.get('claraId', 'unknown'),
                     "error": error_msg,
                     "status": "failed"
                 })
@@ -817,6 +804,14 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                 "errors": results["failed"]
             }
         }
+        
+    except requests.RequestException as e:
+        error_msg = f"Failed to fetch data from Node API: {str(e)}"
+        print(f"❌ {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=error_msg
+        )
         
     except Exception as e:
         print(f"❌ Generate by IDs error: {str(e)}")
