@@ -702,7 +702,7 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
         if not api_response.get('success'):
             raise Exception(f"Node API error: {api_response.get('message', 'Unknown error')}")
         
-        students_data = api_response.get('data', [])
+        students_data = api_response.get('data', {}).get('studentsData', [])
         
         if not students_data:
             raise Exception("No student data returned from Node API")
@@ -719,8 +719,8 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
             try:
                 print(f"\n[{idx}/{len(students_data)}] Processing...")
                 
-                # Extract student info
-                student_info = student_raw_data.get('data', {}).get('student', {})
+                # Extract student info (no extra 'data' wrapper in your API)
+                student_info = student_raw_data.get('student', {})
                 student_id = student_info.get('id', 0)
                 student_name = student_info.get('name', 'Unknown')
                 clara_id = student_info.get('claraId', 'unknown')
@@ -732,9 +732,13 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 
                 # Create temporary JSON file
+                # Wrap in the format master_generator expects
+                wrapped_data = {
+                    "data": student_raw_data  # Wrap it
+                }
                 temp_json_path = os.path.join(TEMP_FOLDER, f"temp_{clara_id}_{datetime.now().timestamp()}.json")
                 with open(temp_json_path, 'w') as f:
-                    json.dump(student_raw_data, f)
+                    json.dump(wrapped_data, f)
                 
                 # Generate PDF
                 print(f"🎨 Generating PDF...")
