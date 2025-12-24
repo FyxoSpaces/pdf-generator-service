@@ -898,45 +898,121 @@ class ClaraHealthPDFGenerator:
         
         c.save()
     
-    # ========== PAGE 8: DENTAL TABLE - EXACT COORDINATES FROM CODE 1 ==========
+    # ========== PAGE 8: DENTAL TABLE - EXACT COORDINATES FROM YOUR FILE ==========
     
     def _generate_page8(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 8 - Dental (EXACT COORDINATES FROM CODE 1)"""
+        """Generate Page 8 - Dental with text wrapping"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
+                preserveAspectRatio=True, mask='auto')
         
         dental = data.get('dental', {})
-        c.setFont(self.get_font('regular'), 11)
+        c.setFont(self.get_font('regular'), 10)
         c.setFillColor(colors.black)
         
-        # EXACT COORDINATES FROM CODE 1
         table_rows = [
-            {'key': 'pit_fissure_caries', 'status_x': 225, 'status_y': 520, 'comment_x': 290, 'comment_y': 520},
-            {'key': 'nursing_bottle_caries', 'status_x': 225, 'status_y': 490, 'comment_x': 290, 'comment_y': 490},
-            {'key': 'gum_inflammation', 'status_x': 225, 'status_y': 462, 'comment_x': 290, 'comment_y': 462},
-            {'key': 'bleeding', 'status_x': 225, 'status_y': 432, 'comment_x': 290, 'comment_y': 432},
-            {'key': 'tartar', 'status_x': 225, 'status_y': 402, 'comment_x': 290, 'comment_y': 402},
-            {'key': 'plaque', 'status_x': 225, 'status_y': 372, 'comment_x': 290, 'comment_y': 372},
-            {'key': 'oral_hygiene', 'status_x': 225, 'status_y': 342, 'comment_x': 290, 'comment_y': 342},
-            {'key': 'dentist_visit_recommendation', 'status_x': 225, 'status_y': 315, 'comment_x': 290, 'comment_y': 315}
+            {
+                'key': 'pit_fissure_caries',
+                'status_x': 225, 'status_y': 520,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 512, 'comment_y2': 530
+            },
+            {
+                'key': 'nursing_bottle_caries',
+                'status_x': 225, 'status_y': 490,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 482, 'comment_y2': 500
+            },
+            {
+                'key': 'gum_inflammation',
+                'status_x': 225, 'status_y': 462,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 454, 'comment_y2': 472
+            },
+            {
+                'key': 'bleeding',
+                'status_x': 225, 'status_y': 432,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 424, 'comment_y2': 442
+            },
+            {
+                'key': 'tarter',
+                'status_x': 225, 'status_y': 402,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 394, 'comment_y2': 412
+            },
+            {
+                'key': 'plaque',
+                'status_x': 225, 'status_y': 372,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 364, 'comment_y2': 382
+            },
+            {
+                'key': 'oral_hygiene',
+                'status_x': 225, 'status_y': 342,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 334, 'comment_y2': 352
+            },
+            {
+                'key': 'dentist_visit_recommendation',
+                'status_x': 225, 'status_y': 315,
+                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 307, 'comment_y2': 325
+            }
         ]
         
         for row in table_rows:
             item_data = dental.get(row['key'], {})
+            
+            # Extract status and comment
             if isinstance(item_data, dict):
                 status = item_data.get('status', '')
                 comment = item_data.get('comment', '')
             else:
                 status = str(item_data) if item_data else ''
                 comment = ''
+            
+            # Draw status
             if status:
                 c.drawString(row['status_x'], row['status_y'], status)
+            
+            # Draw comment with text wrapping
             if comment:
-                c.drawString(row['comment_x'], row['comment_y'], comment)
+                self._draw_wrapped_text(
+                    c, 
+                    comment, 
+                    row['comment_x1'] + 2,  # 2px padding from left
+                    row['comment_y2'],  # Start from top
+                    row['comment_x2'] - row['comment_x1'] - 4,  # Width with padding
+                    row['comment_y2'] - row['comment_y1'],  # Height (18px)
+                    font_size=9  # Slightly smaller to fit better
+                )
         
         c.save()
+
+
+    def _draw_wrapped_text(self, c, text, x, y, max_width, max_height, font_size=9):
+        """Draw text with automatic wrapping within boundaries"""
+        c.setFont(self.get_font('regular'), font_size)
+        
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            if c.stringWidth(test_line, self.get_font('regular'), font_size) <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Draw lines from top
+        line_height = font_size + 1
+        current_y = y - line_height
+        
+        for line in lines:
+            if current_y < (y - max_height):
+                break  # Stop if we exceed cell height
+            c.drawString(x, current_y, line)
+            current_y -= line_height
     
     # ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM CODE 1 ==========
     
