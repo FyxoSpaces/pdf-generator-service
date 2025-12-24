@@ -590,7 +590,7 @@ class ClaraHealthPDFGenerator:
         c.setFont(self.get_font('infographic'), 72)
         c.drawString(50, 405, oxymetry)
         c.setFont(self.get_font('infographic'), 36)
-        c.drawString(150, 405, "%")
+        c.drawString(160, 405, "%")
         c.setFont(self.get_font('regular'), 13)
         c.drawString(400, 430, f"{oxymetry}%")
         
@@ -991,7 +991,7 @@ class ClaraHealthPDFGenerator:
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
+                preserveAspectRatio=True, mask='auto')
         
         measurements = data.get("measurements", {})
         vitals = data.get("vitals", {})
@@ -1039,7 +1039,15 @@ class ClaraHealthPDFGenerator:
         
         c.setFont(self.get_font('infographic'), 23)  # Regular font for pulse/oxy values
         c.drawString(coordinates['pulse_value'][0], coordinates['pulse_value'][1], str(vitals.get('pulse_rate', '')))
-        c.drawString(coordinates['oxy_value'][0], coordinates['oxy_value'][1], f"{vitals.get('oxymetry', '')}%")
+        
+        # Draw oxymetry value WITHOUT the % symbol
+        oxy_value = str(vitals.get('oxymetry', ''))
+        c.drawString(coordinates['oxy_value'][0], coordinates['oxy_value'][1], oxy_value)
+        
+        # Add "%" symbol separately for independent positioning
+        c.setFont(self.get_font('regular'), 11)  # Small font for "%" symbol
+        oxy_value_width = c.stringWidth(oxy_value, self.get_font('infographic'), 23)
+        c.drawString(coordinates['oxy_value'][0] + oxy_value_width + 10, coordinates['oxy_value'][1], "%")
         
         c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
         c.drawCentredString(coordinates['vitals_status'][0], coordinates['vitals_status'][1], final_obs.get('vitals_status', 'Normal'))
