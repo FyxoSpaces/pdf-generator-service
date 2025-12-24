@@ -1014,10 +1014,10 @@ class ClaraHealthPDFGenerator:
             c.drawString(x, current_y, line)
             current_y -= line_height
     
-    # ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM CODE 1 ==========
+# ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM YOUR FILE ==========
     
     def _generate_page9(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 9 - Final Observations (EXACT COORDINATES FROM CODE 1)"""
+        """Generate Page 9 - Final Observations (YOUR EXACT COORDINATES)"""
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
         background = ImageReader(Image.open(self._get_background_path(page_num)))
         c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
@@ -1029,7 +1029,7 @@ class ClaraHealthPDFGenerator:
         hygiene = data.get("hygiene", {})
         final_obs = data.get("final_observations", {})
         
-        # EXACT COORDINATES FROM CODE 1
+        # YOUR EXACT COORDINATES - NOT CHANGED
         coordinates = {
             'bmi_value': (54, 565),
             'bmi_status': (222, 562),
@@ -1046,14 +1046,16 @@ class ClaraHealthPDFGenerator:
         }
         
         c.setFillColor(colors.black)
-        c.setFont(self.get_font('infographic'), 23)
+        c.setFont(self.get_font('infographic'), 23)  # Large font for BMI value
         c.drawString(coordinates['bmi_value'][0], coordinates['bmi_value'][1], str(measurements.get('bmi', '')))
         
-        c.setFont(self.get_font('regular'), 11)
-        try:
-            bmi = float(measurements.get('bmi', 0))
-        except:
-            bmi = 0
+        # Add small "BMI" text next to the value
+        c.setFont(self.get_font('regular'), 11)  # Small font for "BMI" text
+        bmi_value_width = c.stringWidth(str(measurements.get('bmi', '')), self.get_font('infographic'), 23)
+        c.drawString(coordinates['bmi_value'][0] + bmi_value_width + 5, coordinates['bmi_value'][1], "BMI")
+        
+        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
+        bmi = float(measurements.get('bmi', 0))
         if bmi < 18.5:
             bmi_status = "Underweight"
         elif 18.5 <= bmi < 25:
@@ -1065,22 +1067,22 @@ class ClaraHealthPDFGenerator:
         c.drawCentredString(coordinates['bmi_status'][0], coordinates['bmi_status'][1], bmi_status)
         c.drawCentredString(coordinates['ent_status'][0], coordinates['ent_status'][1], final_obs.get('ent_status', 'Normal'))
         
-        c.setFont(self.get_font('infographic'), 23)
+        c.setFont(self.get_font('infographic'), 23)  # Regular font for pulse/oxy values
         c.drawString(coordinates['pulse_value'][0], coordinates['pulse_value'][1], str(vitals.get('pulse_rate', '')))
         c.drawString(coordinates['oxy_value'][0], coordinates['oxy_value'][1], f"{vitals.get('oxymetry', '')}%")
         
-        c.setFont(self.get_font('regular'), 11)
+        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
         c.drawCentredString(coordinates['vitals_status'][0], coordinates['vitals_status'][1], final_obs.get('vitals_status', 'Normal'))
         
-        c.setFont(self.get_font('infographic'), 23)
+        c.setFont(self.get_font('infographic'), 23)  # Regular font for hemoglobin value
         c.drawString(coordinates['hemo_value'][0], coordinates['hemo_value'][1], str(blood_work.get('hemoglobin', '')))
         
-        c.setFont(self.get_font('regular'), 11)
+        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
         c.drawCentredString(coordinates['hemo_status'][0], coordinates['hemo_status'][1], final_obs.get('hemoglobin_status', 'Normal'))
-        c.setFont(self.get_font('regular'), 11)
+        c.setFont(self.get_font('regular'), 11)  # Source Sans 3 for hygiene text
         c.drawString(coordinates['nail_hygiene'][0], coordinates['nail_hygiene'][1], hygiene.get('nail_hygiene', ''))
         c.drawString(coordinates['hair_hygiene'][0], coordinates['hair_hygiene'][1], hygiene.get('hair_hygiene', ''))
-        c.setFont(self.get_font('regular'), 11)
+        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
         c.drawCentredString(coordinates['medical_status'][0], coordinates['medical_status'][1], final_obs.get('medical_status', 'Normal'))
         c.drawCentredString(coordinates['dental_status'][0], coordinates['dental_status'][1], final_obs.get('dental_status', 'Poor'))
         
