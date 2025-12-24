@@ -588,9 +588,9 @@ class ClaraHealthPDFGenerator:
         c.setFont(self.get_font('regular'), 13)
         c.drawString(402, 507, pulse_rate)
         c.setFont(self.get_font('infographic'), 72)
-        c.drawString(60, 405, oxymetry)
+        c.drawString(50, 405, oxymetry)
         c.setFont(self.get_font('infographic'), 36)
-        c.drawString(145, 405, "%")
+        c.drawString(150, 405, "%")
         c.setFont(self.get_font('regular'), 13)
         c.drawString(400, 430, f"{oxymetry}%")
         
@@ -713,36 +713,6 @@ class ClaraHealthPDFGenerator:
                 observation = "Severely Low"
         c.setFont(self.get_font('regular'), 13)
         c.drawString(420, 423, observation)
-        
-        # Severity box (CODE 1 COORDINATES)
-        box_positions = {
-            'mild': (68, 755, 649, 827),
-            'moderate': (68, 678, 649, 750),
-            'severe': (68, 600, 649, 672)
-        }
-        if age <= 11:
-            if 11.0 <= hemoglobin <= 11.4:
-                severity = 'mild'
-            elif 8.0 <= hemoglobin < 11.0:
-                severity = 'moderate'
-            elif hemoglobin < 8.0:
-                severity = 'severe'
-            else:
-                severity = None
-        else:
-            if 11.0 <= hemoglobin <= 11.9:
-                severity = 'mild'
-            elif 8.0 <= hemoglobin < 11.0:
-                severity = 'moderate'
-            elif hemoglobin < 8.0:
-                severity = 'severe'
-            else:
-                severity = None
-        if severity and severity in box_positions:
-            x1, y1, x2, y2 = box_positions[severity]
-            c.setStrokeColor(colors.black)
-            c.setLineWidth(3)
-            c.rect(x1, y1, x2-x1, y2-y1, fill=0, stroke=1)
         
         c.save()
     
