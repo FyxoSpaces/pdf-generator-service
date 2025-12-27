@@ -83,7 +83,7 @@ class StudentIdsRequest(BaseModel):
     """Request model for student IDs"""
     studentIds: List[int]
     nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"  # FIXED: Changed to /multiple
-    authToken: Optional[str] = None
+    authToken: Optional[str] = "zX3N9pV4tQ7bL2yH8kC5wR1sD6fG0jK3mP8vB4nT6yU9iE2oA"
 
 # Helper functions
 def check_dependencies() -> Dict[str, bool]:
