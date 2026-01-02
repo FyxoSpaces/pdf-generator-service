@@ -1,8 +1,8 @@
 """
 Clara Health PDF Generator - FastAPI Microservice
 Standalone service for generating health report PDFs
-WITH S3 UPLOAD INTEGRATION
-FIXED: /api/generate-by-ids now uses /multiple endpoint
+WITH S3 UPLOAD INTEGRATION + PROGRESS TRACKING + CAMPDATA VALIDATION
+Version 2.1.0
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -17,6 +17,7 @@ import sys
 from datetime import datetime
 import shutil
 from pathlib import Path
+import requests
 
 # Add the current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -25,8 +26,8 @@ from s3_uploader import S3Uploader
 
 app = FastAPI(
     title="Clara Health PDF Generator",
-    description="Microservice for generating student health report PDFs with S3 upload",
-    version="2.0.0"
+    description="Microservice for generating student health report PDFs with S3 upload and progress tracking",
+    version="2.1.0"
 )
 
 # CORS middleware
@@ -49,6 +50,10 @@ S3_BUCKET = os.getenv("S3_BUCKET", "pdf-clarahealtonation")
 S3_REGION = os.getenv("S3_REGION", "ap-south-1")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+# NEW: Progress API Configuration
+PROGRESS_API_URL = "https://api.clarahealtonation.in/v1/reports/report-loading-progress"
+STATIC_TOKEN = "zX3N9pV4tQ7bL2yH8kC5wR1sD6fG0jK3mP8vB4nT6yU9iE2oA"
 
 # Initialize S3 Uploader
 s3_uploader = S3Uploader(
@@ -80,10 +85,11 @@ class HealthCheckResponse(BaseModel):
     dependencies: Dict[str, bool]
 
 class StudentIdsRequest(BaseModel):
-    """Request model for student IDs"""
+    """Request model for student IDs with progress tracking"""
     studentIds: List[int]
-    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"  # FIXED: Changed to /multiple
-    authToken: Optional[str] = "zX3N9pV4tQ7bL2yH8kC5wR1sD6fG0jK3mP8vB4nT6yU9iE2oA"
+    uniqueLoaderKey: str  # NEW: Required for progress tracking
+    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"
+    authToken: Optional[str] = STATIC_TOKEN  # Uses static token by default
 
 # Helper functions
 def check_dependencies() -> Dict[str, bool]:
@@ -119,6 +125,64 @@ def cleanup_old_files(folder: str, max_age_hours: int = 24):
     except Exception as e:
         print(f"Error cleaning up old files: {e}")
 
+# NEW: campData validation function
+def validate_camp_data(camp_data: List) -> bool:
+    """
+    Validate if campData has actual health screening data
+    Returns False if campData is empty or None
+    """
+    if not camp_data or len(camp_data) == 0:
+        return False
+    return True
+
+# NEW: Progress tracking function
+def send_progress_update(unique_loader_key: str, student_id: int, success: bool, pdf_url: str = None, error: str = None):
+    """
+    Send progress update to Node.js backend after each report
+    
+    Args:
+        unique_loader_key: Unique key for tracking this batch
+        student_id: Student ID being processed
+        success: Whether PDF generation succeeded
+        pdf_url: S3 URL of generated PDF (if success=True)
+        error: Error message (if success=False)
+    """
+    try:
+        payload = {
+            "uniqueLoaderKey": unique_loader_key,
+            "studentId": student_id,
+            "success": success
+        }
+        
+        if success and pdf_url:
+            payload["pdfUrl"] = pdf_url
+        
+        if not success and error:
+            payload["error"] = error
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {STATIC_TOKEN}'
+        }
+        
+        print(f"   📡 Sending progress update for student {student_id}...")
+        
+        response = requests.post(
+            PROGRESS_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"   ✅ Progress update sent successfully")
+        else:
+            print(f"   ⚠️  Progress update failed (status {response.status_code})")
+        
+    except Exception as e:
+        print(f"   ❌ Error sending progress update: {str(e)}")
+        # Don't raise - progress update failure shouldn't stop PDF generation
+
 # API Endpoints
 
 @app.get("/")
@@ -126,8 +190,14 @@ async def root():
     """Root endpoint"""
     return {
         "service": "Clara Health PDF Generator",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
+        "features": [
+            "campData validation",
+            "Progress tracking",
+            "S3 upload",
+            "Batch processing"
+        ],
         "endpoints": {
             "health": "/health",
             "generate": "/api/generate-pdf",
@@ -153,7 +223,7 @@ async def health_check():
     return HealthCheckResponse(
         status="healthy" if (all_healthy and folders_exist) else "unhealthy",
         service="Clara Health PDF Generator",
-        version="2.0.0",
+        version="2.1.0",
         timestamp=datetime.now().isoformat(),
         dependencies=dependencies
     )
@@ -621,69 +691,59 @@ async def check_s3_access():
             detail=result.get('error', 'S3 bucket not accessible')
         )
 
-# ==================== FIXED: GENERATE BY STUDENT IDS ====================
+# ==================== UPDATED: GENERATE BY STUDENT IDS WITH PROGRESS TRACKING ====================
 
 @app.post("/api/generate-by-ids")
 async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_tasks: BackgroundTasks):
     """
-    Generate PDFs by fetching data from Node.js API (BATCH MODE - FIXED)
+    Generate PDFs with campData validation and progress tracking (UPDATED v2.1)
     
-    Fetches ALL students in ONE request to the /multiple endpoint
+    NEW FEATURES:
+    - Validates campData before generating (skips if empty)
+    - Sends progress update after EACH report (success/failure/skip)
+    - Tracks failed and skipped reports separately
+    - Continues processing even if individual reports fail
     
     Request:
     {
-        "studentIds": [7, 8, 9],
-        "nodeApiUrl": "https://api.clarahealtonation.in/v1/reports/data/multiple",
-        "authToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        "studentIds": [7, 8, 549],
+        "uniqueLoaderKey": "loader-key-123",  // REQUIRED for progress tracking
+        "authToken": "optional-token"  // Uses static token if not provided
     }
     
     Response:
     {
         "success": true,
-        "message": "PDF generation completed",
         "data": {
             "total": 3,
-            "successCount": 3,
+            "successCount": 2,
             "failedCount": 0,
-            "results": [
-                {
-                    "studentId": 7,
-                    "studentName": "Student Name",
-                    "claraId": "CLARA-S1-7",
-                    "pdfUrl": "https://...",
-                    "s3Key": "...",
-                    "status": "success"
-                }
-            ],
-            "errors": []
+            "skippedCount": 1,
+            "results": [...],  // Successful PDFs
+            "errors": [],      // Failed PDFs
+            "skipped": []      // Skipped (no campData)
         }
     }
     """
     try:
         import requests
         
-        print(f"\n📦 [GENERATE BY IDS] Received request for {len(request.studentIds)} students")
-        print(f"🔗 Node API URL: {request.nodeApiUrl}")
+        print("\n" + "="*60)
+        print(f"📦 [GENERATE BY IDS v2.1] Batch processing started")
         print(f"👥 Student IDs: {request.studentIds}")
+        print(f"🔑 Loader Key: {request.uniqueLoaderKey}")
+        print("="*60 + "\n")
         
-        # Step 1: Fetch ALL students data in ONE request
-        print(f"\n📡 Fetching data for all students from Node API...")
+        # Step 1: Fetch data from Node.js API
+        print(f"📡 Fetching data for {len(request.studentIds)} students...")
         
-        headers = {'Content-Type': 'application/json'}
-        if request.authToken:
-            headers['Authorization'] = f"Bearer {request.authToken}"
-            print(f"🔑 Using auth token: {request.authToken[:20]}...")
-        else:
-            print(f"⚠️  WARNING: No auth token provided!")
-        
-        payload = {
-            'studentId': request.studentIds  # Send as array
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f"Bearer {request.authToken}"
         }
         
-        print(f"📤 Request payload: {payload}")
-        print(f"📤 Request headers: {headers}")
+        payload = {'studentId': request.studentIds}
         
-        # POST request to /multiple endpoint
         response = requests.post(
             request.nodeApiUrl, 
             headers=headers, 
@@ -691,14 +751,13 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
             timeout=30
         )
         
-        print(f"📥 Response status: {response.status_code}")
+        print(f"📥 Response status: {response.status_code}\n")
         
         if response.status_code != 200:
             raise Exception(f"Node API returned status {response.status_code}: {response.text}")
         
         api_response = response.json()
         
-        # Validate response
         if not api_response.get('success'):
             raise Exception(f"Node API error: {api_response.get('message', 'Unknown error')}")
         
@@ -707,35 +766,69 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
         if not students_data:
             raise Exception("No student data returned from Node API")
         
-        print(f"✅ Fetched data for {len(students_data)} student(s)")
+        print(f"✅ Fetched data for {len(students_data)} student(s)\n")
         
-        # Step 2: Generate PDFs for each student
+        # Step 2: Process each student with campData validation and progress tracking
         results = {
             "success": [],
-            "failed": []
+            "failed": [],
+            "skipped": []
         }
         
         for idx, student_raw_data in enumerate(students_data, 1):
+            student_id = None
+            student_name = "Unknown"
+            clara_id = "unknown"
+            
             try:
-                print(f"\n[{idx}/{len(students_data)}] Processing...")
+                print(f"{'='*60}")
+                print(f"[{idx}/{len(students_data)}] Processing student...")
+                print(f"{'='*60}")
                 
-                # Extract student info (no extra 'data' wrapper in your API)
+                # Extract student info
                 student_info = student_raw_data.get('student', {})
                 student_id = student_info.get('id', 0)
                 student_name = student_info.get('name', 'Unknown')
                 clara_id = student_info.get('claraId', 'unknown')
                 
-                print(f"📋 Student ID {student_id}: {student_name} ({clara_id})")
+                print(f"📋 Student ID: {student_id}")
+                print(f"👤 Name: {student_name}")
+                print(f"🆔 Clara ID: {clara_id}")
+                
+                # CRITICAL: Validate campData
+                camp_data = student_raw_data.get('campData', [])
+                
+                if not validate_camp_data(camp_data):
+                    skip_reason = "No health screening data available (campData is empty)"
+                    print(f"⚠️  SKIPPING: {skip_reason}")
+                    
+                    results["skipped"].append({
+                        "studentId": student_id,
+                        "studentName": student_name,
+                        "claraId": clara_id,
+                        "reason": skip_reason,
+                        "status": "skipped"
+                    })
+                    
+                    # Send progress update - SKIPPED
+                    send_progress_update(
+                        unique_loader_key=request.uniqueLoaderKey,
+                        student_id=student_id,
+                        success=False,
+                        error=skip_reason
+                    )
+                    
+                    print(f"✅ [{idx}/{len(students_data)}] SKIPPED\n")
+                    continue  # Skip this student
+                
+                print(f"✅ campData validated ({len(camp_data)} records found)")
                 
                 # Generate output filename
                 output_filename = get_output_filename(student_info)
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 
                 # Create temporary JSON file
-                # Wrap in the format master_generator expects
-                wrapped_data = {
-                    "data": student_raw_data  # Wrap it
-                }
+                wrapped_data = {"data": student_raw_data}
                 temp_json_path = os.path.join(TEMP_FOLDER, f"temp_{clara_id}_{datetime.now().timestamp()}.json")
                 with open(temp_json_path, 'w') as f:
                     json.dump(wrapped_data, f)
@@ -753,6 +846,8 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                 if os.path.exists(temp_json_path):
                     os.remove(temp_json_path)
                 
+                print(f"✅ PDF generated")
+                
                 # Upload to S3
                 print(f"📤 Uploading to S3...")
                 s3_result = s3_uploader.upload_pdf(
@@ -761,41 +856,72 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                     make_public=False
                 )
                 
-                if s3_result.get('success'):
-                    results["success"].append({
-                        "studentId": student_id,
-                        "studentName": student_name,
-                        "claraId": clara_id,
-                        "pdfUrl": s3_result['s3_url'],
-                        "s3Key": s3_result['s3_key'],
-                        "status": "success"
-                    })
-                    
-                    # Clean up local file
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
-                    
-                    print(f"✅ [{idx}/{len(students_data)}] Success: {student_name}")
-                else:
-                    raise Exception(s3_result.get('error', 'S3 upload failed'))
+                if not s3_result.get('success'):
+                    raise Exception(f"S3 upload failed: {s3_result.get('error')}")
+                
+                pdf_url = s3_result['s3_url']
+                print(f"✅ Uploaded to S3")
+                
+                # Success! Add to results
+                results["success"].append({
+                    "studentId": student_id,
+                    "studentName": student_name,
+                    "claraId": clara_id,
+                    "pdfUrl": pdf_url,
+                    "s3Key": s3_result['s3_key'],
+                    "status": "success"
+                })
+                
+                # Send progress update - SUCCESS
+                send_progress_update(
+                    unique_loader_key=request.uniqueLoaderKey,
+                    student_id=student_id,
+                    success=True,
+                    pdf_url=pdf_url
+                )
+                
+                # Clean up local file
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                
+                print(f"✅ [{idx}/{len(students_data)}] COMPLETED\n")
                 
             except Exception as e:
                 error_msg = str(e)
-                print(f"❌ [{idx}/{len(students_data)}] Failed: {error_msg}")
+                print(f"❌ FAILED: {error_msg}")
                 
                 results["failed"].append({
-                    "studentId": student_info.get('id', 0),
-                    "studentName": student_info.get('name', 'Unknown'),
-                    "claraId": student_info.get('claraId', 'unknown'),
+                    "studentId": student_id or 0,
+                    "studentName": student_name,
+                    "claraId": clara_id,
                     "error": error_msg,
                     "status": "failed"
                 })
+                
+                # Send progress update - FAILED
+                send_progress_update(
+                    unique_loader_key=request.uniqueLoaderKey,
+                    student_id=student_id or 0,
+                    success=False,
+                    error=error_msg
+                )
+                
+                print(f"❌ [{idx}/{len(students_data)}] FAILED\n")
+                continue  # Continue with next student
         
         # Schedule cleanup
         background_tasks.add_task(cleanup_old_files, OUTPUT_FOLDER)
         background_tasks.add_task(cleanup_old_files, TEMP_FOLDER, 1)
         
-        print(f"\n📊 Batch complete: {len(results['success'])} succeeded, {len(results['failed'])} failed")
+        # Final summary
+        print("="*60)
+        print("📊 BATCH PROCESSING COMPLETE")
+        print("="*60)
+        print(f"✅ Success: {len(results['success'])}")
+        print(f"❌ Failed: {len(results['failed'])}")
+        print(f"⚠️  Skipped: {len(results['skipped'])}")
+        print(f"📊 Total: {len(request.studentIds)}")
+        print("="*60 + "\n")
         
         return {
             "success": True,
@@ -804,21 +930,23 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
                 "total": len(request.studentIds),
                 "successCount": len(results["success"]),
                 "failedCount": len(results["failed"]),
+                "skippedCount": len(results["skipped"]),
                 "results": results["success"],
-                "errors": results["failed"]
+                "errors": results["failed"],
+                "skipped": results["skipped"]
             }
         }
         
     except requests.RequestException as e:
         error_msg = f"Failed to fetch data from Node API: {str(e)}"
-        print(f"❌ {error_msg}")
+        print(f"\n❌ {error_msg}\n")
         raise HTTPException(
             status_code=500,
             detail=error_msg
         )
         
     except Exception as e:
-        print(f"❌ Generate by IDs error: {str(e)}")
+        print(f"\n❌ Batch generation error: {str(e)}\n")
         raise HTTPException(
             status_code=500,
             detail=f"Batch generation failed: {str(e)}"
@@ -826,14 +954,15 @@ async def generate_pdfs_by_student_ids(request: StudentIdsRequest, background_ta
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🏥 Clara Health PDF Generator - FastAPI Microservice")
+    print("🏥 Clara Health PDF Generator - FastAPI Microservice v2.1")
     print("="*60)
     print(f"\n📁 Backgrounds folder: {BACKGROUNDS_FOLDER}")
     print(f"📁 Fonts folder: {FONTS_FOLDER}")
     print(f"📁 Output folder: {OUTPUT_FOLDER}")
     print(f"\n☁️  S3 Bucket: {S3_BUCKET}")
     print(f"☁️  S3 Region: {S3_REGION}")
-    print(f"\n🚀 Starting server...")
+    print(f"\n📡 Progress API: {PROGRESS_API_URL}")
+    print(f"\n🚀 Starting server on port 8002...")
     print("="*60 + "\n")
     
     uvicorn.run(
