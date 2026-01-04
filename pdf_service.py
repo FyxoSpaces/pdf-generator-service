@@ -85,11 +85,10 @@ class HealthCheckResponse(BaseModel):
     dependencies: Dict[str, bool]
 
 class StudentIdsRequest(BaseModel):
-    """Request model for student IDs with progress tracking"""
     studentIds: List[int]
-    uniqueLoaderKey: str  # NEW: Required for progress tracking
-    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"
-    authToken: Optional[str] = STATIC_TOKEN  # Uses static token by default
+    authToken: str  # ✅ Required from Node.js
+    uniqueLoaderKey: str  # ✅ Required from Node.js
+    nodeApiUrl: str = "https://api.clarahealtonation.in/v1/reports/data/multiple"  # Optional
 
 # Helper functions
 def check_dependencies() -> Dict[str, bool]:
