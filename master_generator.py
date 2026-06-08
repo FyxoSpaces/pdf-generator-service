@@ -1,1263 +1,2349 @@
 """
-Clara Health PDF Generator - MASTER FILE - PRODUCTION VERSION
-Combines ALL pages into a single PDF
-USING EXACT COORDINATES FROM LOCAL PERFECT VERSION
-WITH CUSTOM FONT SUPPORT
-PRODUCTION-READY - WORKS WITH BACKEND JSON RESPONSE
-COMMAND-LINE ARGS SUPPORT FOR FASTAPI INTEGRATION
-API INTEGRATION SUPPORT
-NO BOLD FONTS VERSION
+Clara Health Report Generator — BOY edition (new 8-page 19x13in book design).
+
+Renders all 8 spreads with data overlay. Page 6 is still background-only
+while the spirometry JSON contract is finalized.
+
+Uses the same SVG image-extraction approach as render_test_pdf.py to lay
+down each spread's background, then overlays text via ReportLab.
 """
 
-from reportlab.lib.pagesizes import A4
+import os
+import re
+import math
+import base64
+import json
+from io import BytesIO
+from datetime import datetime
+from xml.etree import ElementTree as ET
+
+import openpyxl
+from PIL import Image
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from PIL import Image
-from PyPDF2 import PdfMerger
-import json
-import os
-import tempfile
-from datetime import datetime
-import argparse
-import sys
-import requests
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPDF
 
-PAGE_WIDTH, PAGE_HEIGHT = A4
-
-# API Configuration
-API_BASE_URL = "https://api.clarahealtonation.in/v1"
-API_ENDPOINT = f"{API_BASE_URL}/reports/data/multiple"
+# resvg rasterizes vector-format page SVGs (gradients, paths) that the embedded-
+# PNG extractor can't handle. Optional: if unavailable we fall back to extraction.
+try:
+    import resvg_py
+    _HAS_RESVG = True
+except Exception:
+    _HAS_RESVG = False
 
 
-def fetch_student_data_from_api(student_ids: list, bearer_token: str):
+# 19in x 13in book spread in PostScript points
+PAGE_WIDTH = 19 * 72   # 1368 pt
+PAGE_HEIGHT = 13 * 72  # 936 pt
+PAGE_SIZE = (PAGE_WIDTH, PAGE_HEIGHT)
+
+# Designer's SVG viewBox
+SVG_VIEW_W = 5700.0
+SVG_VIEW_H = 3900.0
+SCALE_X = PAGE_WIDTH / SVG_VIEW_W   # 0.24
+SCALE_Y = PAGE_HEIGHT / SVG_VIEW_H  # 0.24
+
+SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
+# Standard page content rectangle in PDF points (x, y, w, h), measured from the
+# two-half layout of the normal pages (left+right page art sits inside this box
+# with a ~6% print margin). Used to place single-image page exports — which may
+# carry no <use> transform — so they align/centre exactly like the other pages.
+CONTENT_RECT = (88.6, 47.0, 1190.8, 842.0)
+
+# Shared status capsules at backgrounds/Boy root (text baked as vector <text>).
+DOCTOR_VISIT_SVG = {"YES": "Doctor Visit(Yes).svg", "NO": "Doctor Visit(No).svg"}
+OBSERVATION_NORMAL_SVG = "Normal Observation.svg"
+
+# Clara ID bottom-strip positions (editor-marked). The "Clara ID:" prefix is
+# baked into the template SVG; we only overlay the ID value at these coords.
+CLARA_ID_LEFT_POS = (195.5, 94.0)
+CLARA_ID_RIGHT_POS = (790.7, 94.0)
+
+
+# ---------- Clara color palette (clara_font_reference "Color Palette") ----------
+HEADING_BLUE = colors.HexColor("#B2E2F2")   # headings, labels, Normal Range, most titles
+PATIENT_TEAL = colors.HexColor("#8EC8D1")   # patient info, hemoglobin value, dental circular
+TEXT_WHITE = colors.HexColor("#FFFFFF")     # body text, pill text, sub-descriptions
+NEAR_BLACK = colors.HexColor("#080606")     # Clara ID footer, food labels, anemia values
+
+
+# ---------- SVG background parsing (reused pattern from render_test_pdf.py) ----------
+
+def parse_svg_images(svg_path):
+    """Extract embedded PNG images and their placements from a Page SVG.
+
+    Returns: [{'png_bytes': b..., 'x': float, 'y': float, 'w': float, 'h': float}, ...]
+    Coordinates are in SVG viewBox units.
     """
-    Fetch student data from Clara Health API
-    
-    Args:
-        student_ids: List of student IDs to fetch
-        bearer_token: Bearer token for authentication
-        
-    Returns:
-        List of student data dictionaries
-    """
-    print(f"🔄 Fetching data for {len(student_ids)} student(s) from API...")
-    
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {bearer_token}'
-    }
-    
-    payload = {
-        'studentId': student_ids
-    }
-    
-    try:
-        response = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        if not data.get('success'):
-            raise Exception(f"API returned error: {data.get('message', 'Unknown error')}")
-        
-        students_data = data.get('data', [])
-        print(f"✅ Successfully fetched data for {len(students_data)} student(s)")
-        
-        return students_data
-        
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error fetching data from API: {e}")
-        raise
-    except Exception as e:
-        print(f"❌ Error processing API response: {e}")
-        raise
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
 
-
-
-def parse_production_json(production_data):
-    """
-    Parse production JSON from backend into the format expected by generators
-    ACTUALLY FIXED VERSION - Reads real data but keeps compatible structure
-    
-    Production JSON structure:
-    {
-        "data": {
-            "student": {...},
-            "campData": [...],
-            "school": {...}
-        }
-    }
-    """
-    print("🔄 Parsing production JSON (ACTUALLY FIXED - Compatible Structure)...")
-    
-    # Extract main data
-    data = production_data.get('data', {})
-    student_data = data.get('student', {})
-    camp_data_array = data.get('campData', [])
-    school_data = data.get('school', {})
-    
-    # Parse date of birth from ISO to DD/MM/YYYY
-    dob_iso = student_data.get('date_of_birth', '')
-    try:
-        dob_date = datetime.fromisoformat(dob_iso.replace('Z', '+00:00'))
-        dob = dob_date.strftime('%d/%m/%Y')
-    except:
-        dob = ''
-    
-    # Build student object
-    student = {
-        'name': student_data.get('name', '') or '',
-        'dob': dob,
-        'sex': student_data.get('gender', '').upper()[0] if student_data.get('gender') else '',
-        'class': str(student_data.get('class', '') or ''),
-        'section': str(student_data.get('section', '') or ''),
-        'roll_no': str(student_data.get('roll_number', '') or ''),
-        'admission_no': str(student_data.get('admission_number', '') or ''),
-        'clara_id': student_data.get('claraId', '') or ''
-    }
-    
-    # Initialize parsed data structure - START WITH DEFAULTS, WILL OVERRIDE WITH REAL DATA
-    parsed_data = {
-        'medical_observations': {},
-        'dental': {},
-        'ent': {
-            'hearing': 'Normal',  # Will be overridden if data exists
-            'ear': 'Normal',      # Will be overridden if data exists
-            'throat': 'Normal',   # Will be overridden if data exists
-            'nose': 'Normal'      # Will be overridden if data exists
-        },
-        'hygiene': {
-            'nail_hygiene': 'Good',
-            'nail_observation': 'Maintain proper Nail Hygiene',
-            'hair_hygiene': 'Good',
-            'hair_observation': 'Maintain proper Hair Hygiene'
-        },
-        'vitals': {},
-        'blood_work': {},
-        'measurements': {},
-        'final_observations': {
-            'bmi_status': 'Normal',
-            'bmi_note': '',
-            'ent_status': 'Normal',
-            'ent_note': '',
-            'vitals_status': 'Normal',
-            'vitals_note': '',
-            'hemoglobin_status': 'Normal',
-            'hemoglobin_note': '',
-            'hygiene_note': '',
-            'medical_status': 'Normal',
-            'medical_note': '',
-            'dental_status': 'Normal',
-            'dental_note': ''
-        }
-    }
-    
-    # Parse campData array and OVERRIDE defaults with real data
-    for item in camp_data_array:
-        param_name = item.get('parameter', {}).get('name', '')
-        sub_param_name = item.get('subParameter', {}).get('name', '')
-        value = item.get('value', '')
-        comment = item.get('comment', '')
-        
-        # BIOMETRICS & VITALS
-        if param_name == 'BIOMETRICS & VITALS':
-            if sub_param_name == 'HEIGHT in CM':
-                parsed_data['measurements']['height'] = str(value) if value else ''
-            elif sub_param_name == 'WEIGHT in KG':
-                parsed_data['measurements']['weight'] = str(value) if value else ''
-            elif sub_param_name == 'BMI':
-                parsed_data['measurements']['bmi'] = str(value) if value else ''
-            elif sub_param_name == 'PULSE RATE in Bpm':
-                parsed_data['vitals']['pulse_rate'] = str(value) if value else '78'
-            elif sub_param_name == 'OXYMETRY in %':
-                parsed_data['vitals']['oxymetry'] = str(value) if value else '98'
-            elif sub_param_name == 'HEMOGLOBIN in g/dl':
-                try:
-                    hb_value = float(value)
-                    parsed_data['blood_work']['hemoglobin'] = str(hb_value)
-                    if hb_value < 11.0:
-                        parsed_data['final_observations']['hemoglobin_status'] = 'Low'
-                        parsed_data['blood_work']['anemia_status'] = 'Anemic'
-                    else:
-                        parsed_data['final_observations']['hemoglobin_status'] = 'Normal'
-                        parsed_data['blood_work']['anemia_status'] = 'Non-Anemic'
-                except ValueError:
-                    if 'below' in value.lower() or 'anemic' in value.lower():
-                        parsed_data['blood_work']['hemoglobin'] = '10.5'
-                        parsed_data['final_observations']['hemoglobin_status'] = 'Low'
-                        parsed_data['blood_work']['anemia_status'] = 'Anemic'
-                    else:
-                        parsed_data['blood_work']['hemoglobin'] = '12.5'
-                        parsed_data['final_observations']['hemoglobin_status'] = 'Normal'
-                        parsed_data['blood_work']['anemia_status'] = 'Non-Anemic'
-        
-        # GENERAL EXAMINATION
-        elif param_name == 'GENERAL EXAMINATION':
-            key_map = {
-                'PALLOR': 'pallor',
-                'ICTERUS': 'icterus',
-                'CYANOSIS': 'cyanosis',
-                'LYMPHADENOPATHY': 'lymphadenopathy',
-                'ALLERGY': 'allergy',
-                'SKIN ASSESMENT': 'skin',
-                'CLUBBING': 'clubbing',
-                'BONES AND JOINT': 'bone_and_joints',
-                'PUBERTY CHANGES': 'puberty_changes'
-            }
-            
-            if sub_param_name in key_map:
-                value_lower = value.lower()
-                
-                # Better detection logic
-                abnormal_keywords = ['present', 'detected', 'noted', 'observed', 
-                                    'inflammation', 'swollen', 'abnormal', 'shows', 
-                                    'dryness', 'rashes', 'lesions', 'needs', 'delayed', 
-                                    'early', 'redness', 'swelling']
-                normal_keywords = ['absent', 'no ', 'healthy', 'normal', 
-                                  'appropriate', 'appears healthy', 'within normal']
-                
-                is_abnormal = any(keyword in value_lower for keyword in abnormal_keywords)
-                is_normal = any(keyword in value_lower for keyword in normal_keywords)
-                
-                # ✅ FIX: Prioritize abnormal detection
-                if is_abnormal and not (is_normal and value_lower.startswith('no')):
-                    status = 'Present'
-                elif is_normal:
-                    status = 'Absent'
-                else:
-                    status = 'Absent'  # Default to Absent if unclear
-                
-                parsed_data['medical_observations'][key_map[sub_param_name]] = {
-                    'status': status,
-                    'comment': comment
-                }
-        
-        # ✅ FIX: ENT EXAMINATION - Now properly reads and OVERRIDES defaults
-        elif param_name == 'ENT EXAMINATION':
-            if sub_param_name == 'HEARING SENSITIVITY':
-                value_lower = value.lower()
-                if 'reduced' in value_lower or 'abnormal' in value_lower:
-                    parsed_data['ent']['hearing'] = 'Abnormal'
-                    parsed_data['final_observations']['ent_status'] = 'Abnormal'
-                else:
-                    parsed_data['ent']['hearing'] = 'Normal'
-                    
-            elif sub_param_name == 'THROAT EXAMINATION':
-                value_lower = value.lower()
-                # ✅ CRITICAL FIX: Detect throat problems
-                if ('redness' in value_lower or 'swelling' in value_lower or 
-                    'infection' in value_lower or 'irritation' in value_lower or
-                    'inflammation' in value_lower or 'tonsil' in value_lower):
-                    parsed_data['ent']['throat'] = 'Abnormal'
-                    parsed_data['final_observations']['ent_status'] = 'Abnormal'
-                    parsed_data['final_observations']['ent_note'] = comment if comment else value
-                    print(f"   🚨 THROAT ABNORMALITY DETECTED: {value}")
-                else:
-                    parsed_data['ent']['throat'] = 'Normal'
-                    
-            elif sub_param_name == 'NASAL EXAMINATION':
-                value_lower = value.lower()
-                if 'congestion' in value_lower or 'blockage' in value_lower or 'abnormal' in value_lower:
-                    parsed_data['ent']['nose'] = 'Abnormal'
-                    parsed_data['final_observations']['ent_status'] = 'Abnormal'
-                else:
-                    parsed_data['ent']['nose'] = 'Normal'
-        
-        # DENTAL CHECKUP
-        elif param_name == 'DENTAL CHECKUP':
-            key_map = {
-                'PIT & FISSURE CARIES': 'pit_fissure_caries',
-                'NURSING BOTTLE CARIES': 'nursing_bottle_caries',
-                'GUM INFLAMATION': 'gum_inflammation',
-                'BLEEDING': 'bleeding',
-                'TARTAR': 'tartar',
-                'PLAQUE': 'plaque',
-                'ORAL HYGIENE': 'oral_hygiene',
-                'DENTIST VISIT RECOMMENDATION': 'dentist_visit_recommendation'
-            }
-            
-            if sub_param_name in key_map:
-                if 'ORAL HYGIENE' in sub_param_name:
-                    if 'good' in value.lower():
-                        status = 'Good'
-                    elif 'fair' in value.lower():
-                        status = 'Fair'
-                    elif 'poor' in value.lower():
-                        status = 'Poor'
-                    else:
-                        status = value
-                elif 'DENTIST VISIT RECOMMENDATION' in sub_param_name:
-                    status = 'Yes' if ('visit a dentist' in value.lower() or 
-                                      'visit recommended' in value.lower()) else 'No'
-                else:
-                    value_lower = value.lower()
-                    is_present = any(word in value_lower for word in 
-                                    ['present', 'observed', 'noted', 'detected', 
-                                     'inflammation', 'visible', 'bleeding'])
-                    is_absent = any(word in value_lower for word in 
-                                   ['absent', 'no ', 'healthy', 'clean'])
-                    
-                    if is_present and not is_absent:
-                        status = 'Present'
-                    else:
-                        status = 'Absent'
-                
-                parsed_data['dental'][key_map[sub_param_name]] = {
-                    'status': status,
-                    'comment': comment
-                }
-                
-                if 'DENTIST VISIT RECOMMENDATION' in sub_param_name and status == 'Yes':
-                    parsed_data['final_observations']['dental_status'] = 'Poor'
-                    parsed_data['final_observations']['dental_note'] = 'Doctor Visit Recommended'
-    
-    # Auto-calculate BMI status
-    try:
-        bmi_val = float(parsed_data['measurements'].get('bmi', 0))
-        if bmi_val < 18.5:
-            parsed_data['final_observations']['bmi_status'] = 'Underweight'
-        elif 18.5 <= bmi_val < 25:
-            parsed_data['final_observations']['bmi_status'] = 'Normal'
-        elif 25 <= bmi_val < 30:
-            parsed_data['final_observations']['bmi_status'] = 'Overweight'
-        else:
-            parsed_data['final_observations']['bmi_status'] = 'Obese'
-    except:
-        parsed_data['final_observations']['bmi_status'] = 'Normal'
-    
-    # Auto-calculate vitals status
-    try:
-        pulse = int(parsed_data['vitals'].get('pulse_rate', 78))
-        oxy = int(parsed_data['vitals'].get('oxymetry', 98))
-        if 70 <= pulse <= 100 and oxy >= 95:
-            parsed_data['final_observations']['vitals_status'] = 'Normal'
-        else:
-            parsed_data['final_observations']['vitals_status'] = 'Check Required'
-    except:
-        parsed_data['final_observations']['vitals_status'] = 'Normal'
-    
-    # Build final result
-    result = {
-        'camp_name': school_data.get('schoolName', ''),
-        'clara_id_camp': school_data.get('claraId', ''),
-        'student': student,
-        'measurements': parsed_data['measurements'],
-        'vitals': parsed_data['vitals'],
-        'blood_work': parsed_data['blood_work'],
-        'hygiene': parsed_data['hygiene'],
-        'medical_observations': parsed_data['medical_observations'],
-        'ent': parsed_data['ent'],
-        'dental': parsed_data['dental'],
-        'final_observations': parsed_data['final_observations']
-    }
-    
-    print("✅ Production JSON parsed (compatible structure)!")
-    print(f"   📊 BMI: {result['measurements'].get('bmi', 'N/A')}")
-    print(f"   💓 Pulse: {result['vitals'].get('pulse_rate', 'N/A')} bpm")
-    print(f"   👂 ENT - Throat: {result['ent'].get('throat', 'N/A')}")
-    print(f"   👂 ENT Status: {result['final_observations'].get('ent_status', 'N/A')}")
-    
-    return result
-
-
-def register_custom_fonts(fonts_folder):
-    """Register custom TTF fonts with EXACT filenames"""
-    if not fonts_folder or not os.path.exists(fonts_folder):
-        print("⚠️  Fonts folder not found. Using default fonts...")
-        return False
-    
-    fonts_registered = 0
-    
-    try:
-        # Source Sans 3 Regular
-        source_sans_regular = os.path.join(fonts_folder, 'SourceSans3-Regular.ttf')
-        if os.path.exists(source_sans_regular):
-            pdfmetrics.registerFont(TTFont('SourceSans3', source_sans_regular))
-            print("✅ Registered SourceSans3-Regular.ttf")
-            fonts_registered += 1
-        else:
-            print(f"⚠️  Not found: {source_sans_regular}")
-        
-        # Source Sans 3 Bold
-        source_sans_bold = os.path.join(fonts_folder, 'SourceSans3-Bold.ttf')
-        if os.path.exists(source_sans_bold):
-            pdfmetrics.registerFont(TTFont('SourceSans3-Bold', source_sans_bold))
-            print("✅ Registered SourceSans3-Bold.ttf")
-            fonts_registered += 1
-        else:
-            print(f"⚠️  Not found: {source_sans_bold}")
-        
-        # Bitter Bold
-        bitter_bold = os.path.join(fonts_folder, 'Bitter-Bold.ttf')
-        if os.path.exists(bitter_bold):
-            pdfmetrics.registerFont(TTFont('Bitter-Bold', bitter_bold))
-            print("✅ Registered Bitter-Bold.ttf")
-            fonts_registered += 1
-        else:
-            print(f"⚠️  Not found: {bitter_bold}")
-        
-        if fonts_registered > 0:
-            print(f"✅ Successfully registered {fonts_registered}/3 custom fonts!")
-            return True
-        else:
-            print("⚠️  No custom fonts found. Using default fonts...")
-            return False
-        
-    except Exception as e:
-        print(f"⚠️  Error loading custom fonts: {e}")
-        print("   Using default fonts instead...")
-        return False
-
-
-class ClaraHealthPDFGenerator:
-    """Master generator for complete health report"""
-    
-    def __init__(self, backgrounds_folder: str, fonts_folder: str = None):
-        self.backgrounds_folder = backgrounds_folder
-        self.fonts_folder = fonts_folder
-        self.custom_fonts = False
-        
-        # Register custom fonts if available
-        if fonts_folder:
-            self.custom_fonts = register_custom_fonts(fonts_folder)
-    
-    def get_font(self, style='regular'):
-        """Get appropriate font based on style and availability - NO BOLD"""
-        if not self.custom_fonts:
-            # Fallback to default fonts - ALL REGULAR
-            return {
-                'student': 'Courier',
-                'regular': 'Helvetica',
-                'bold': 'Helvetica',  # Changed from Helvetica-Bold
-                'infographic': 'Helvetica'  # Changed from Helvetica-Bold
-            }.get(style, 'Helvetica')
-        
-        # Custom fonts available - return appropriate font - ALL REGULAR
-        font_map = {
-            'student': 'Courier',  # Courier for student info
-            'regular': 'SourceSans3',  # Source Sans 3 for regular text
-            'bold': 'SourceSans3',  # Changed from SourceSans3-Bold
-            'infographic': 'SourceSans3'  # Changed from Bitter-Bold
-        }
-        
-        return font_map.get(style, 'SourceSans3')
-        
-    def generate_complete_report(self, data: dict, output_path: str):
-        """Generate complete 11-page PDF report"""
-        print("=" * 60)
-        print("GENERATING COMPLETE CLARA HEALTH REPORT")
-        print("=" * 60)
-        
-        temp_files = []
-        merger = PdfMerger()
-        temp_dir = tempfile.gettempdir()
-        
-        try:
-            # Generate all pages
-            pages = [
-                ('01', self._generate_page1),
-                ('02', self._generate_page2),
-                ('03', self._generate_page3),
-                ('04', self._generate_page4),
-                ('05(a)', self._generate_image_only),  # Image only
-                ('05', self._generate_page5),
-                ('06', self._generate_page6),
-                ('07', self._generate_image_only),  # Image only (page 7 placeholder)
-                ('08', self._generate_page8),
-                ('09', self._generate_page9),
-                ('10', self._generate_image_only),  # Image only
-            ]
-            
-            for page_num, generator_func in pages:
-                temp_file = os.path.join(temp_dir, f"temp_page_{page_num}.pdf")
-                print(f"\n🎨 Generating Page {page_num}...")
-                generator_func(data, temp_file, page_num)
-                temp_files.append(temp_file)
-                merger.append(temp_file)
-                print(f"✅ Page {page_num} complete")
-            
-            # Write final combined PDF
-            merger.write(output_path)
-            merger.close()
-            
-            print("\n" + "=" * 60)
-            print(f"🎉 COMPLETE REPORT GENERATED: {output_path}")
-            print("=" * 60)
-            
-        finally:
-            # Cleanup temp files
-            for temp_file in temp_files:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-    
-    # ========== IMAGE-ONLY PAGES ==========
-    
-    def _generate_image_only(self, data: dict, output_path: str, page_num: str):
-        """Generate pages that are just background images"""
-        background_path = self._get_background_path(page_num)
-        
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(background_path))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        c.save()
-    
-    # ========== PAGE 1: BMI - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page1(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 1 - BMI (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        # EXACT COORDINATES FROM CODE 1
-        c.setFont(self.get_font('regular'), 13)
-        c.setFillColor(colors.black)
-        camp_name = str(data.get('camp_name', '') or 'School')
-        c.drawString(120, 663, camp_name)
-        
-        # Student Clara ID right below camp name (CODE 1 COORDINATES)
-        student = data.get('student', {})
-        clara_id = str(student.get('clara_id') or 'CLS14741')
-        c.setFont(self.get_font('student'), 13)  # Courier for clara id
-        c.drawString(95, 647, clara_id)  # Positioned below camp name
-        
-        # Student information (CODE 1 COORDINATES)
-        c.setFont(self.get_font('student'), 13)  # Courier for student info
-        name = str(student.get('name') or 'N/A')
-        dob = str(student.get('dob') or '')
-        sex = str(student.get('sex') or '')
-        student_class = str(student.get('class') or '')
-        section = str(student.get('section') or '')
-        roll_no = str(student.get('roll_no') or '')
-        
-        c.drawString(78, 615, name)
-        c.drawString(78, 598, dob)
-        c.drawString(78, 581, sex)
-        c.drawString(398, 615, student_class)
-        c.drawString(398, 598, section)
-        c.drawString(398, 581, roll_no)
-        # Clara ID moved to top, removed from right side
-        
-        measurements = data.get('measurements', {})
-        c.setFont(self.get_font('regular'), 13)  # Source Sans 3 for measurements
-        
-        # Safe conversion for measurements with defaults
-        height = str(measurements.get('height') or '145')
-        weight = str(measurements.get('weight') or '35')
-        bmi = str(measurements.get('bmi') or '16.5')
-        
-        c.drawString(90, 504, f"{height} cm")
-        c.drawString(92, 487, f"{weight} kg")
-        c.drawString(92, 470, bmi)
-        
-        # BIG BMI VALUE in green box (right side) - CODE 1 COORDINATES
-        c.setFont(self.get_font('infographic'), 45)
-        c.setFillColor(colors.black)
-        c.drawString(418, 497, bmi)  # Big BMI number
-        
-        # "BMI" text right next to the big BMI value (CODE 1 FEATURE)
-        c.setFont(self.get_font('regular'), 16)  # Smaller font for "BMI" label
-        c.drawString(525, 497, "BMI")  # Positioned to the right of the big number
-        
-        # BMI scale highlight (CODE 1 COORDINATES)
-        try:
-            bmi_float = float(bmi)
-        except:
-            bmi_float = 16.5
-            
-        box_positions = {
-            'underweight': (70, 339, 160, 355),      # CODE 1 COORDINATES
-            'normal': (160, 339, 255, 355),          # CODE 1 COORDINATES
-            'overweight': (255, 339, 350, 355),      # CODE 1 COORDINATES
-            'obese': (350, 339, 445, 355),           # CODE 1 COORDINATES
-            'morbidly_obese': (445, 339, 540, 355)   # CODE 1 COORDINATES
-        }
-        if bmi_float < 18.5:
-            category = 'underweight'
-        elif 18.5 <= bmi_float < 25:
-            category = 'normal'
-        elif 25 <= bmi_float < 30:
-            category = 'overweight'
-        elif 30 <= bmi_float < 40:
-            category = 'obese'
-        else:
-            category = 'morbidly_obese'
-        x1, y1, x2, y2 = box_positions[category]
-        c.setStrokeColor(colors.black)
-        c.setLineWidth(2)
-        c.rect(x1, y1, x2 - x1, y2 - y1, fill=0, stroke=1)
-        
-        # Observation (CODE 1 COORDINATES)
-        if bmi_float < 18.5:
-            observation = "Underweight"
-        elif 18.5 <= bmi_float < 25:
-            observation = "Normal BMI"
-        elif 25 <= bmi_float < 30:
-            observation = "Overweight"
-        elif 30 <= bmi_float < 40:
-            observation = "Obese"
-        else:
-            observation = "Morbidly Obese"
-        c.setFont(self.get_font('regular'), 13)
-        c.drawString(118, 303, observation)
-        
-        c.save()
-    
-    # ========== PAGE 2: VITALS - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page2(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 2 - Vitals (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        vitals = data.get('vitals', {})
-        pulse_rate = str(vitals.get('pulse_rate') or '78')
-        oxymetry = str(vitals.get('oxymetry') or '98')
-        
-        # EXACT COORDINATES FROM CODE 1
-        c.setFont(self.get_font('infographic'), 72)
-        c.setFillColor(colors.black)
-        c.drawString(50, 505, pulse_rate)
-        c.setFont(self.get_font('regular'), 13)
-        c.drawString(402, 507, pulse_rate)
-        c.setFont(self.get_font('infographic'), 72)
-        c.drawString(50, 405, oxymetry)
-        c.setFont(self.get_font('infographic'), 36)
-        c.drawString(160, 405, "%")
-        c.setFont(self.get_font('regular'), 13)
-        c.drawString(400, 430, f"{oxymetry}%")
-        
-        # Observation
-        try:
-            pulse_int = int(pulse_rate)
-            oxy_int = int(oxymetry)
-        except:
-            pulse_int = 78
-            oxy_int = 98
-            
-        pulse_status = "normal" if 70 <= pulse_int <= 100 else ("high" if pulse_int > 100 else "low")
-        oxy_status = "normal" if oxy_int >= 95 else "low"
-        if pulse_status == "normal" and oxy_status == "normal":
-            observation = "Pulse Rate Normal"
-        elif pulse_status == "high":
-            observation = "High Pulse Rate"
-        elif pulse_status == "low":
-            observation = "Low Pulse Rate"
-        elif oxy_status == "low":
-            observation = "Low Oxygen Level"
-        else:
-            observation = "Check Vitals"
-        c.setFont(self.get_font('regular'), 13)
-        c.drawString(135, 342, observation)
-        
-        c.save()
-    
-    # ========== PAGE 3: HEMOGLOBIN - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page3(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 3 - Hemoglobin (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        blood_work = data.get('blood_work', {})
-        try:
-            hemoglobin = float(blood_work.get('hemoglobin') or 12.5)
-        except:
-            hemoglobin = 12.5
-        anemia_status = blood_work.get('anemia_status', 'Non-Anemic')  # Get status from backend
-        
-        # Draw arc (CODE 1 COORDINATES)
-        center_x, center_y = 110, 525
-        outer_radius = 50
-        max_hemoglobin = 16.0
-        percentage = min(hemoglobin / max_hemoglobin, 1.0)
-        
-        # First draw the full arc in red (background/unfilled portion)
-        c.setStrokeColor(colors.HexColor('#FF4444'))
-        c.setLineWidth(15)
-        c.arc(center_x - outer_radius, center_y - outer_radius,
-              center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-360)
-        
-        # Then draw the filled portion over it in appropriate color
-        if hemoglobin < 8.0:
-            arc_color = colors.HexColor('#FF4444')
-        elif hemoglobin < 11.0:
-            arc_color = colors.HexColor('#FF9933')
-        else:
-            arc_color = colors.HexColor('#66CC66')
-        c.setStrokeColor(arc_color)
-        c.setLineWidth(15)
-        c.arc(center_x - outer_radius, center_y - outer_radius,
-              center_x + outer_radius, center_y + outer_radius,
-              startAng=93, extent=-360 * percentage)
-        
-        # Display anemia status inside the circle (CODE 1 FEATURE)
-        c.setFont(self.get_font('infographic'), 16)  # Smaller font to fit status text
-        c.setFillColor(colors.black)
-        # Center the text inside the circle
-        text_width = c.stringWidth(anemia_status, self.get_font('infographic'), 16)
-        c.drawString(center_x - text_width/2, center_y - 8, anemia_status)
-        
-        # Blood drop image slider (CODE 1 FEATURE - replaces the green bar)
-        bar_x, bar_y = 207, 509
-        bar_width = 378
-        
-        # Calculate position for blood drop based on percentage
-        blood_x = bar_x + (bar_width * percentage) - 10  # -10 to center the icon
-        blood_y = bar_y - 5  # Slightly below the bar line
-        
-        # Draw the blood drop image
-        try:
-            blood_image_path = os.path.join(self.backgrounds_folder, 'Blood.png')
-            blood_image = ImageReader(Image.open(blood_image_path))
-            c.drawImage(blood_image, blood_x, blood_y, width=55, height=55,
-                       preserveAspectRatio=True, mask='auto')
-        except Exception as e:
-            print(f"⚠️  Error loading Blood.png: {e}")
-        
-        # Calculate age and observation
-        try:
-            dob_date = datetime.strptime(data.get('student', {}).get('dob', '15/06/2016'), "%d/%m/%Y")
-            today = datetime.today()
-            age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
-        except:
-            age = 8
-        
-        if age <= 11:
-            if hemoglobin >= 11.5:
-                observation = "Normal"
-            elif 11.0 <= hemoglobin < 11.5:
-                observation = "Mildly Low"
-            elif 8.0 <= hemoglobin < 11.0:
-                observation = "Moderately Low"
-            else:
-                observation = "Severely Low"
-        else:
-            if hemoglobin >= 12.0:
-                observation = "Normal"
-            elif 11.0 <= hemoglobin < 12.0:
-                observation = "Mildly Low"
-            elif 8.0 <= hemoglobin < 11.0:
-                observation = "Moderately Low"
-            else:
-                observation = "Severely Low"
-        c.setFont(self.get_font('regular'), 13)
-        c.drawString(420, 423, observation)
-        
-        c.save()
-    
-    # ========== PAGE 4: HYGIENE - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page4(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 4 - Hygiene (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        hygiene = data.get('hygiene', {})
-        
-        # EXACT COORDINATES FROM CODE 1
-        scale_positions = {'Poor': 340, 'Fair': 410, 'Good': 480}
-        
-        # Nail hygiene (CODE 1 COORDINATES)
-        nail_hygiene = hygiene.get('nail_hygiene', 'Poor')
-        marker_x = scale_positions.get(nail_hygiene, 340)
-        marker_y = 450
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(2)
-        c.circle(marker_x, marker_y, 8, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(marker_x, marker_y, 6, fill=1, stroke=0)
-        c.setFont(self.get_font('regular'), 13)
-        c.setFillColor(colors.black)
-        c.drawString(110, 474, nail_hygiene)
-        c.setFont(self.get_font('regular'), 12)
-        c.drawString(150, 410, hygiene.get('nail_observation', 'Maintain proper Nail Hygiene'))
-        
-        # Hair hygiene (CODE 1 COORDINATES)
-        hair_hygiene = hygiene.get('hair_hygiene', 'Poor')
-        marker_x = scale_positions.get(hair_hygiene, 340)
-        marker_y = 308
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(2)
-        c.circle(marker_x, marker_y, 8, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(marker_x, marker_y, 6, fill=1, stroke=0)
-        c.setFont(self.get_font('regular'), 13)
-        c.setFillColor(colors.black)
-        c.drawString(117, 332, hair_hygiene)
-        c.setFont(self.get_font('regular'), 12)
-        c.drawString(150, 270, hygiene.get('hair_observation', 'Maintain proper Hair Hygiene'))
-        
-        c.save()
-    
-    # ========== PAGE 5: MEDICAL - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page5(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 5 - Medical (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        observations = data.get('medical_observations', {})
-        c.setFont(self.get_font('regular'), 11)
-        c.setFillColor(colors.black)
-        
-        # EXACT COORDINATES FROM CODE 1
-        table_rows = [
-            {'key': 'pallor', 'status_x': 180, 'status_y': 595, 'comment_x': 235, 'comment_y': 595},
-            {'key': 'icterus', 'status_x': 180, 'status_y': 565, 'comment_x': 235, 'comment_y': 565},
-            {'key': 'clubbing', 'status_x': 180, 'status_y': 535, 'comment_x': 235, 'comment_y': 535},
-            {'key': 'lymphadenopathy', 'status_x': 180, 'status_y': 505, 'comment_x': 235, 'comment_y': 505},
-            {'key': 'allergy', 'status_x': 180, 'status_y': 475, 'comment_x': 235, 'comment_y': 475},
-            {'key': 'skin', 'status_x': 180, 'status_y': 445, 'comment_x': 235, 'comment_y': 445},
-            {'key': 'bone_and_joints', 'status_x': 180, 'status_y': 415, 'comment_x': 235, 'comment_y': 415},
-            {'key': 'puberty_changes', 'status_x': 180, 'status_y': 385, 'comment_x': 235, 'comment_y': 385},
-            {'key': 'cyanosis', 'status_x': 180, 'status_y': 355, 'comment_x': 235, 'comment_y': 355}
-        ]
-        
-        for row in table_rows:
-            obs_data = observations.get(row['key'], {})
-            status = obs_data.get('status', 'Absent')
-            c.drawString(row['status_x'], row['status_y'], status)
-            comment = obs_data.get('comment', '')
-            if comment:
-                c.drawString(row['comment_x'], row['comment_y'], comment)
-        
-        c.save()
-    
-    # ========== PAGE 6: ENT - EXACT COORDINATES FROM CODE 1 ==========
-    
-    def _generate_page6(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 6 - ENT (EXACT COORDINATES FROM CODE 1)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                   preserveAspectRatio=True, mask='auto')
-        
-        ent = data.get('ent', {})
-        
-        # EXACT COORDINATES FROM CODE 1
-        hearing_y, ear_y, throat_y, nose_y = 509, 509, 396, 396
-        hearing_text_y, ear_text_y, throat_text_y, nose_text_y = 490, 490, 378, 378
-        hearing_text_x, ear_text_x, throat_text_x, nose_text_x = 140, 410, 140, 410
-        
-        scale_positions_left = {'Poor': 145, 'Fair': 185, 'Good': 225, 'Normal': 269}
-        scale_positions_right = {'Poor': 416, 'Fair': 456, 'Good': 496, 'Normal': 540}
-        
-        c.setFont(self.get_font('regular'), 9)
-        c.setFillColor(colors.black)
-        
-        # Hearing
-        hearing_x = scale_positions_left.get(ent.get('hearing', 'Normal'), 269)
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(1.5)
-        c.circle(hearing_x, hearing_y, 7, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(hearing_x, hearing_y, 5, fill=1, stroke=0)
-        c.setFillColor(colors.black)
-        c.drawString(hearing_text_x, hearing_text_y, "No Abnormalities found")
-        
-        # Ear
-        ear_x = scale_positions_right.get(ent.get('ear', 'Normal'), 540)
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(1.5)
-        c.circle(ear_x, ear_y, 7, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(ear_x, ear_y, 5, fill=1, stroke=0)
-        c.setFillColor(colors.black)
-        c.drawString(ear_text_x, ear_text_y, "No Abnormalities found")
-        
-        # Throat
-        throat_x = scale_positions_left.get(ent.get('throat', 'Normal'), 269)
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(1.5)
-        c.circle(throat_x, throat_y, 7, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(throat_x, throat_y, 5, fill=1, stroke=0)
-        c.setFillColor(colors.black)
-        c.drawString(throat_text_x, throat_text_y, "No Abnormalities found")
-        
-        # Nose
-        nose_x = scale_positions_right.get(ent.get('nose', 'Normal'), 540)
-        c.setFillColor(colors.white)
-        c.setStrokeColor(colors.HexColor('#333333'))
-        c.setLineWidth(1.5)
-        c.circle(nose_x, nose_y, 7, fill=1, stroke=1)
-        c.setFillColor(colors.HexColor('#2196F3'))
-        c.circle(nose_x, nose_y, 5, fill=1, stroke=0)
-        c.setFillColor(colors.black)
-        c.drawString(nose_text_x, nose_text_y, "No Abnormalities found")
-        
-        c.save()
-    
-    # ========== PAGE 8: DENTAL TABLE - EXACT COORDINATES FROM YOUR FILE ==========
-    
-    def _generate_page8(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 8 - Dental with text wrapping"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                preserveAspectRatio=True, mask='auto')
-        
-        dental = data.get('dental', {})
-        c.setFont(self.get_font('regular'), 10)
-        c.setFillColor(colors.black)
-        
-        table_rows = [
-            {
-                'key': 'pit_fissure_caries',
-                'status_x': 225, 'status_y': 520,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 512, 'comment_y2': 530
-            },
-            {
-                'key': 'nursing_bottle_caries',
-                'status_x': 225, 'status_y': 490,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 482, 'comment_y2': 500
-            },
-            {
-                'key': 'gum_inflammation',
-                'status_x': 225, 'status_y': 462,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 454, 'comment_y2': 472
-            },
-            {
-                'key': 'bleeding',
-                'status_x': 225, 'status_y': 432,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 424, 'comment_y2': 442
-            },
-            {
-                'key': 'tarter',
-                'status_x': 225, 'status_y': 402,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 394, 'comment_y2': 412
-            },
-            {
-                'key': 'plaque',
-                'status_x': 225, 'status_y': 372,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 364, 'comment_y2': 382
-            },
-            {
-                'key': 'oral_hygiene',
-                'status_x': 225, 'status_y': 342,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 334, 'comment_y2': 352
-            },
-            {
-                'key': 'dentist_visit_recommendation',
-                'status_x': 225, 'status_y': 315,
-                'comment_x1': 290, 'comment_x2': 555, 'comment_y1': 307, 'comment_y2': 325
-            }
-        ]
-        
-        for row in table_rows:
-            item_data = dental.get(row['key'], {})
-            
-            # Extract status and comment
-            if isinstance(item_data, dict):
-                status = item_data.get('status', '')
-                comment = item_data.get('comment', '')
-            else:
-                status = str(item_data) if item_data else ''
-                comment = ''
-            
-            # Draw status
-            if status:
-                c.drawString(row['status_x'], row['status_y'], status)
-            
-            # Draw comment with text wrapping
-            if comment:
-                self._draw_wrapped_text(
-                    c, 
-                    comment, 
-                    row['comment_x1'] + 2,  # 2px padding from left
-                    row['comment_y2'],  # Start from top
-                    row['comment_x2'] - row['comment_x1'] - 4,  # Width with padding
-                    row['comment_y2'] - row['comment_y1'],  # Height (18px)
-                    font_size=9  # Slightly smaller to fit better
-                )
-        
-        c.save()
-
-
-    def _draw_wrapped_text(self, c, text, x, y, max_width, max_height, font_size=9):
-        """Draw text with automatic wrapping within boundaries"""
-        c.setFont(self.get_font('regular'), font_size)
-        
-        words = text.split()
-        lines = []
-        current_line = []
-        
-        for word in words:
-            test_line = ' '.join(current_line + [word])
-            if c.stringWidth(test_line, self.get_font('regular'), font_size) <= max_width:
-                current_line.append(word)
-            else:
-                if current_line:
-                    lines.append(' '.join(current_line))
-                current_line = [word]
-        
-        if current_line:
-            lines.append(' '.join(current_line))
-        
-        # Draw lines from top
-        line_height = font_size + 1
-        current_y = y - line_height
-        
-        for line in lines:
-            if current_y < (y - max_height):
-                break  # Stop if we exceed cell height
-            c.drawString(x, current_y, line)
-            current_y -= line_height
-    
-# ========== PAGE 9: FINAL OBS - EXACT COORDINATES FROM YOUR FILE ==========
-    
-    def _generate_page9(self, data: dict, output_path: str, page_num: str):
-        """Generate Page 9 - Final Observations (YOUR EXACT COORDINATES)"""
-        c = pdf_canvas.Canvas(output_path, pagesize=A4)
-        background = ImageReader(Image.open(self._get_background_path(page_num)))
-        c.drawImage(background, 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
-                preserveAspectRatio=True, mask='auto')
-        
-        measurements = data.get("measurements", {})
-        vitals = data.get("vitals", {})
-        blood_work = data.get("blood_work", {})
-        hygiene = data.get("hygiene", {})
-        final_obs = data.get("final_observations", {})
-        
-        # YOUR EXACT COORDINATES - NOT CHANGED
-        coordinates = {
-            'bmi_value': (54, 565),
-            'bmi_status': (222, 562),
-            'ent_status': (470, 562),
-            'pulse_value': (57, 406),
-            'oxy_value': (130, 406),
-            'vitals_status': (239, 404),
-            'hemo_value': (317, 406),
-            'hemo_status': (470, 404),
-            'nail_hygiene': (160, 274),
-            'hair_hygiene': (160, 253),
-            'medical_status': (480, 253),
-            'dental_status': (208, 112),
-        }
-        
-        c.setFillColor(colors.black)
-        c.setFont(self.get_font('infographic'), 23)  # Large font for BMI value
-        c.drawString(coordinates['bmi_value'][0], coordinates['bmi_value'][1], str(measurements.get('bmi', '')))
-        
-        # Add small "BMI" text next to the value
-        c.setFont(self.get_font('regular'), 11)  # Small font for "BMI" text
-        bmi_value_width = c.stringWidth(str(measurements.get('bmi', '')), self.get_font('infographic'), 23)
-        c.drawString(coordinates['bmi_value'][0] + bmi_value_width + 5, coordinates['bmi_value'][1], "BMI")
-        
-        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
-        bmi = float(measurements.get('bmi', 0))
-        if bmi < 18.5:
-            bmi_status = "Underweight"
-        elif 18.5 <= bmi < 25:
-            bmi_status = "Normal"
-        elif 25 <= bmi < 30:
-            bmi_status = "Overweight"
-        else:
-            bmi_status = "Obese"
-        c.drawCentredString(coordinates['bmi_status'][0], coordinates['bmi_status'][1], bmi_status)
-        c.drawCentredString(coordinates['ent_status'][0], coordinates['ent_status'][1], final_obs.get('ent_status', 'Normal'))
-        
-        c.setFont(self.get_font('infographic'), 23)  # Regular font for pulse/oxy values
-        c.drawString(coordinates['pulse_value'][0], coordinates['pulse_value'][1], str(vitals.get('pulse_rate', '')))
-        
-        # Draw oxymetry value WITHOUT the % symbol
-        oxy_value = str(vitals.get('oxymetry', ''))
-        c.drawString(coordinates['oxy_value'][0], coordinates['oxy_value'][1], oxy_value)
-        
-        # Add "%" symbol separately for independent positioning
-        c.setFont(self.get_font('regular'), 11)  # Small font for "%" symbol
-        oxy_value_width = c.stringWidth(oxy_value, self.get_font('infographic'), 23)
-        c.drawString(coordinates['oxy_value'][0] + oxy_value_width + 10, coordinates['oxy_value'][1], "%")
-        
-        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
-        c.drawCentredString(coordinates['vitals_status'][0], coordinates['vitals_status'][1], final_obs.get('vitals_status', 'Normal'))
-        
-        c.setFont(self.get_font('infographic'), 23)  # Regular font for hemoglobin value
-        c.drawString(coordinates['hemo_value'][0], coordinates['hemo_value'][1], str(blood_work.get('hemoglobin', '')))
-        
-        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
-        c.drawCentredString(coordinates['hemo_status'][0], coordinates['hemo_status'][1], final_obs.get('hemoglobin_status', 'Normal'))
-        c.setFont(self.get_font('regular'), 11)  # Source Sans 3 for hygiene text
-        c.drawString(coordinates['nail_hygiene'][0], coordinates['nail_hygiene'][1], hygiene.get('nail_hygiene', ''))
-        c.drawString(coordinates['hair_hygiene'][0], coordinates['hair_hygiene'][1], hygiene.get('hair_hygiene', ''))
-        c.setFont(self.get_font('regular'), 11)  # Changed from 'bold' to 'regular'
-        c.drawCentredString(coordinates['medical_status'][0], coordinates['medical_status'][1], final_obs.get('medical_status', 'Normal'))
-        c.drawCentredString(coordinates['dental_status'][0], coordinates['dental_status'][1], final_obs.get('dental_status', 'Poor'))
-        
-        c.save()
-    
-    # ========== HELPER METHODS ==========
-    
-    def _get_background_path(self, page_num: str) -> str:
-        """Get background image path for page number"""
-        for ext in ['.jpeg', '.jpg', '.png']:
-            path = os.path.join(self.backgrounds_folder, f"page_{page_num}{ext}")
-            if os.path.exists(path):
-                return path
-        raise FileNotFoundError(f"Background image not found for page {page_num}")
-
-
-# ========== MAIN EXECUTION ==========
-
-def generate_complete_health_report(json_path: str, backgrounds_folder: str, output_path: str, fonts_folder: str = None):
-    """Generate complete health report from JSON data (supports both test and production formats)"""
-    print("\n")
-    print("🏥" * 30)
-    print("CLARA HEALTH - COMPLETE REPORT GENERATOR")
-    print("🏥" * 30)
-    print("\n")
-    
-    with open(json_path, 'r') as f:
-        raw_data = json.load(f)
-    
-    # Detect if it's production JSON (has 'data' key) or test JSON
-    if 'data' in raw_data:
-        print("📦 Production JSON detected - parsing...")
-        data = parse_production_json(raw_data)
-    else:
-        print("📦 Test JSON detected - using as-is...")
-        data = raw_data
-    
-    print(f"📋 Patient: {data.get('student', {}).get('name', 'Unknown')}")
-    print(f"📅 DOB: {data.get('student', {}).get('dob', 'Unknown')}")
-    print(f"🏫 Class: {data.get('student', {}).get('class', 'Unknown')} - {data.get('student', {}).get('section', 'Unknown')}")
-    print("\n")
-    
-    generator = ClaraHealthPDFGenerator(backgrounds_folder, fonts_folder)
-    generator.generate_complete_report(data, output_path)
-    
-    print("\n")
-    print("✨" * 30)
-    print("REPORT GENERATION COMPLETE!")
-    print("✨" * 30)
-    print(f"\n📄 Output: {output_path}\n")
-
-
-def generate_reports_from_api(student_ids: list, bearer_token: str, backgrounds_folder: str, 
-                               output_dir: str, fonts_folder: str = None):
-    """
-    Generate health reports by fetching data from API
-    
-    Args:
-        student_ids: List of student IDs to generate reports for
-        bearer_token: Bearer token for API authentication
-        backgrounds_folder: Path to backgrounds folder
-        output_dir: Directory to save generated PDFs
-        fonts_folder: Path to fonts folder (optional)
-    
-    Returns:
-        List of generated PDF file paths
-    """
-    print("\n")
-    print("🏥" * 30)
-    print("CLARA HEALTH - API REPORT GENERATOR")
-    print("🏥" * 30)
-    print("\n")
-    
-    # Fetch data from API
-    students_data = fetch_student_data_from_api(student_ids, bearer_token)
-    
-    if not students_data:
-        print("❌ No student data received from API")
-        return []
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Generate reports for each student
-    generated_files = []
-    generator = ClaraHealthPDFGenerator(backgrounds_folder, fonts_folder)
-    
-    for student_raw_data in students_data:
-        try:
-            # Parse student data
-            data = parse_production_json(student_raw_data)
-            
-            # Generate output filename
-            student_name = data.get('student', {}).get('name', 'Unknown')
-            clara_id = data.get('student', {}).get('clara_id', 'Unknown')
-            safe_filename = f"{clara_id}_{student_name.replace(' ', '_')}_health_report.pdf"
-            output_path = os.path.join(output_dir, safe_filename)
-            
-            # Generate report
-            print(f"\n📋 Generating report for: {student_name} ({clara_id})")
-            generator.generate_complete_report(data, output_path)
-            
-            generated_files.append(output_path)
-            print(f"✅ Report saved: {output_path}")
-            
-        except Exception as e:
-            print(f"❌ Error generating report for student: {e}")
+    image_defs = {}
+    for img in root.iter(f"{{{SVG_NS}}}image"):
+        img_id = img.get("id")
+        href = img.get(f"{{{XLINK_NS}}}href") or img.get("href") or ""
+        if not href.startswith("data:image/png;base64,"):
             continue
-    
-    print("\n")
-    print("✨" * 30)
-    print(f"GENERATED {len(generated_files)} REPORT(S)")
-    print("✨" * 30)
-    print("\n")
-    
-    return generated_files
+        image_defs[img_id] = base64.b64decode(href.split(",", 1)[1])
 
+    placed = []
+    for use in root.iter(f"{{{SVG_NS}}}use"):
+        href = use.get(f"{{{XLINK_NS}}}href") or use.get("href") or ""
+        if not href.startswith("#"):
+            continue
+        ref_id = href[1:]
+        if ref_id not in image_defs:
+            continue
+
+        w = float(use.get("width", "0").rstrip("px"))
+        h = float(use.get("height", "0").rstrip("px"))
+        tx, ty = 0.0, 0.0
+        m = re.search(
+            r"matrix\(\s*1\s*,\s*0\s*,\s*0\s*,\s*1\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)",
+            use.get("transform", "")
+        )
+        if m:
+            tx = float(m.group(1))
+            ty = float(m.group(2))
+
+        placed.append({
+            "png_bytes": image_defs[ref_id],
+            "x": tx, "y": ty, "w": w, "h": h,
+        })
+
+    return placed
+
+
+def svg_text_content(svg_path):
+    """Return the concatenated <text> content of an SVG (handles tspans), or ''.
+    Used to read the answer baked into a capsule asset (e.g. 'No', 'Yes',
+    'Normal') so we can re-draw it with an embedded font."""
+    try:
+        root = ET.parse(svg_path).getroot()
+    except (ET.ParseError, FileNotFoundError):
+        return ""
+    parts = []
+    for t in root.iter(f"{{{SVG_NS}}}text"):
+        txt = "".join(t.itertext()).strip()
+        if txt:
+            parts.append(txt)
+    return " ".join(parts)
+
+
+def svg_has_vector_content(svg_path):
+    """True if the SVG carries real vector art (<path> elements), meaning the
+    embedded-PNG extractor would drop most of the page. The old 'flattened'
+    pages are pure full-page <image> placements with zero paths."""
+    try:
+        root = ET.parse(svg_path).getroot()
+    except ET.ParseError:
+        return False
+    return next(root.iter(f"{{{SVG_NS}}}path"), None) is not None
+
+
+def rasterize_svg_background(c, svg_path, zoom=1):
+    """Rasterize a whole page SVG with resvg (handles gradients + paths + embedded
+    images) and place it as the full-page background. zoom=1 renders at the
+    viewBox native size (5700px wide ≈ 300 dpi on the 19in page); resvg requires
+    an integer zoom."""
+    png_bytes = bytes(resvg_py.svg_to_bytes(svg_path=svg_path, zoom=int(zoom)))
+    pil_img = Image.open(BytesIO(png_bytes))
+    # Flatten RGBA onto white. With an alpha channel ReportLab's mask='auto'
+    # auto-crops the transparent border and re-anchors the art to the page
+    # corner; a fully opaque image fills the viewBox edge-to-edge as intended.
+    if pil_img.mode == "RGBA":
+        flat = Image.new("RGB", pil_img.size, (255, 255, 255))
+        flat.paste(pil_img, mask=pil_img.split()[3])
+        pil_img = flat
+    c.drawImage(ImageReader(pil_img), 0, 0, width=PAGE_WIDTH, height=PAGE_HEIGHT,
+                preserveAspectRatio=False)
+
+
+def draw_background(c, svg_path):
+    """Draw one Page SVG as the canvas background.
+
+    Old 'flattened' pages embed full-page PNGs — we place those directly (fast,
+    lossless). Newer vector-format pages (paths + gradients) can't be handled by
+    the extractor, so we rasterize the whole SVG with resvg instead.
+    """
+    if _HAS_RESVG and svg_has_vector_content(svg_path):
+        rasterize_svg_background(c, svg_path)
+        return
+
+    placed = parse_svg_images(svg_path)
+    if not placed:
+        raise RuntimeError(f"No embedded PNGs found in {svg_path}")
+
+    # Single-image export (one flattened PNG for the whole spread). These often
+    # omit the <use> transform, so their stored x/y/w/h can't be trusted — place
+    # the image in the standard content rectangle so it centres like every other
+    # page instead of anchoring to the viewBox corner.
+    if len(placed) == 1:
+        pil_img = Image.open(BytesIO(placed[0]["png_bytes"]))
+        cx, cy, cw, ch = CONTENT_RECT
+        c.drawImage(ImageReader(pil_img), cx, cy, width=cw, height=ch,
+                    preserveAspectRatio=False, mask="auto")
+        return
+
+    for img in placed:
+        x_pt = img["x"] * SCALE_X
+        y_pt = PAGE_HEIGHT - (img["y"] + img["h"]) * SCALE_Y
+        w_pt = img["w"] * SCALE_X
+        h_pt = img["h"] * SCALE_Y
+
+        pil_img = Image.open(BytesIO(img["png_bytes"]))
+        c.drawImage(ImageReader(pil_img), x_pt, y_pt, width=w_pt, height=h_pt,
+                    preserveAspectRatio=False, mask="auto")
+
+
+# ---------- Production JSON parsing ----------
+
+def _iso_to_ddmmyyyy(iso_str):
+    """Convert an ISO datetime string to DD/MM/YYYY; '' on failure."""
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y")
+    except (ValueError, AttributeError):
+        return ""
+
+
+# BMI categories use WHO cutoffs to match the printed ranges on the Page 2
+# figure box (<18.5 / 18.5-24.9 / 25-29.9 / 30-39.9 / 40+). The returned name
+# also keys both the highlight-overlay SVG and the Excel reference row:
+#   Underweight, Normal, Overweight, Obese (figure "Obesity"), Morbidly Obese (figure "Extreme Obesity").
+def bmi_category_from_value(bmi):
+    """Return the WHO BMI category name, or '' if unknown."""
+    try:
+        v = float(bmi)
+    except (ValueError, TypeError):
+        return ""
+    if v < 18.5:
+        return "Underweight"
+    if v < 25.0:
+        return "Normal"
+    if v < 30.0:
+        return "Overweight"
+    if v < 40.0:
+        return "Obese"
+    return "Morbidly Obese"
+
+
+# Maps a BMI category to the highlight-overlay SVG filename in backgrounds/Boy/Page 2.
+BMI_CATEGORY_SVG = {
+    "Underweight": "Under-Weight.svg",
+    "Normal": "Normal.svg",
+    "Overweight": "Over-Weight.svg",
+    "Obese": "Obese.svg",
+    "Morbidly Obese": "Extremely-Obese.svg",
+}
+
+
+# Page 2 right-page summary bar chart. Per the editor markings, the three
+# rating-column x positions are fixed; rows step down by 22.7 pt in y starting
+# from BMI=552.6 (Hemoglobin sits at 529.9, then 22.7 steps down).
+SUMMARY_BAR_LEFT_X = 850.0   # left edge of each gradient bar (line starts here)
+SUMMARY_LINE_THICKNESS = 6.5  # pt — matches the bar's visual height
+SUMMARY_X = {"poor": 889.0, "fair": 1016.4, "excellent": 1137.5}
+SUMMARY_ROW_KEYS = [
+    "bmi", "hemoglobin", "spirometry", "nervous", "cardio",
+    "respiratory", "ent", "eye_vision", "dental",
+]
+SUMMARY_Y_TOP = 552.6  # BMI row (Hemoglobin row sits at 529.9, per the editor markings)
+SUMMARY_Y_GAP = 22.7
+SUMMARY_ROW_Y = {k: SUMMARY_Y_TOP - i * SUMMARY_Y_GAP for i, k in enumerate(SUMMARY_ROW_KEYS)}
+
+
+def bmi_summary_rating(category):
+    """Map BMI category -> 'poor' | 'fair' | 'excellent' | None."""
+    if category == "Normal":
+        return "excellent"
+    if category in ("Underweight", "Overweight"):
+        return "fair"
+    if category in ("Obese", "Morbidly Obese"):
+        return "poor"
+    return None
+
+
+# Page 3 left-page (Nervous System) capsule SVG assets per category.
+# Categories below match the values in the NERVOUS SYSTEM Excel sheet column G.
+NERVOUS_PILL_SVGS = {
+    "mental_status": {
+        "Alert & Active": "mental/Alert.svg",
+        "Drowsy": "mental/Drowsy.svg",
+        "Irritable": "mental/Irritable.svg",
+    },
+    "motor_strength": {
+        "Symmetrical/Strong": "motor/Strong.svg",
+        "Weakness Noted": "motor/Weakness.svg",
+    },
+    "reflexes": {
+        "Normal/Brisk": "reflexes/Normal.svg",
+        "Diminished": "reflexes/Diminished.svg",
+        "Asymmetrical": "reflexes/Asymmetrical.svg",
+    },
+}
+
+# Default "positive" category per sub-parameter (used when JSON has no value yet).
+NERVOUS_DEFAULTS = {
+    "mental_status": "Alert & Active",
+    "motor_strength": "Symmetrical/Strong",
+    "reflexes": "Normal/Brisk",
+}
+
+
+def load_nervous_system_reference(xlsx_path):
+    """Read the NERVOUS SYSTEM sheet -> {sub_param_key: {category: comment}}.
+
+    Sheet layout: column D names the sub-parameter (Mental Status / Reflexes /
+    Motor Strength). G holds the category name, H holds the comment. Each
+    sub-parameter spans several rows; D is only set on its first row.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["NERVOUS SYSTEM"]
+
+    # Map Excel sub-parameter labels to our keys
+    label_to_key = {
+        "mental status": "mental_status",
+        "motor strength": "motor_strength",
+        "reflexes": "reflexes",
+    }
+
+    ref = {"mental_status": {}, "motor_strength": {}, "reflexes": {}}
+    current_key = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value  # D column (sub parameter)
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current_key = key
+        if not current_key:
+            continue
+        category = ws.cell(r, 7).value  # G
+        comment = ws.cell(r, 8).value   # H
+        if category and str(category).strip():
+            ref[current_key][str(category).strip()] = (str(comment).strip() if comment else "")
+    return ref
+
+
+# Page 4 left-page (Anemia Screening). The ANEMIA Excel sheet keys rows by
+# category in column H; pulls parental guidance (J), fact (K), range (L), foods (M).
+def load_anemia_reference(xlsx_path):
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["ANEMIA"]
+    ref = {}
+    for r in range(3, ws.max_row + 1):
+        cat = ws.cell(r, 8).value  # H
+        if not cat or not str(cat).strip():
+            continue
+        name = str(cat).strip()
+        ref[name.lower()] = {
+            "category": name,
+            "doctor_visit": str(ws.cell(r, 9).value or "").strip(),
+            "comment": str(ws.cell(r, 10).value or "").strip(),
+            "fact": str(ws.cell(r, 11).value or "").strip(),
+            "range": str(ws.cell(r, 12).value or "").strip(),
+            "foods": str(ws.cell(r, 13).value or "").strip(),
+        }
+    return ref
+
+
+def anemia_category_from_blood_work(blood_work):
+    """Derive the anemia category from hemoglobin text + comment in the JSON.
+
+    The API returns descriptive text (no numeric value), so we classify by keywords.
+    Categories match the ANEMIA Excel sheet H column.
+    """
+    text = " ".join(
+        str(blood_work.get(k, "") or "") for k in ("hemoglobin_text", "hemoglobin_comment")
+    ).lower()
+    if "severe" in text:
+        return "Severe anemic"
+    if "moderate" in text:
+        return "Moderate Anemic"
+    if "mild" in text:
+        return "Mild Anemic"
+    if "below" in text or ("anemic" in text and "non" not in text):
+        return "Mild Anemic"
+    return "Normal ( Non Anemic)"
+
+
+# Page 4 right-page (Cardiovascular System). Three sub-parameters, each with
+# its own category set and pill SVG asset under backgrounds/Boy/Page 4/<sub>/.
+CARDIO_PILL_SVGS = {
+    "heart_sounds": {
+        "S1 S2 Normal": "heart sounds/S1 S2 Normal.svg",
+        "Murmur Noted": "heart sounds/Murmur Noted.svg",
+        "Tachycardia": "heart sounds/Tachycardia.svg",
+    },
+    "capillary_refill": {
+        "Normal (< 2 sec)": "Cappilary Refill/Normal.svg",
+        "Delayed": "Cappilary Refill/Delayed.svg",
+    },
+    "pulse_quality": {
+        "Strong & Regular": "pulse quality/Strong.svg",
+        "Weak": "pulse quality/Weak.svg",
+        "Irregular": "pulse quality/Irregular.svg",
+    },
+}
+
+CARDIO_DEFAULTS = {
+    "heart_sounds": "S1 S2 Normal",
+    "capillary_refill": "Normal (< 2 sec)",
+    "pulse_quality": "Strong & Regular",
+}
+
+
+def load_cardio_reference(xlsx_path):
+    """Read CARDIOVASCULAR SYSTEM sheet -> {sub_param: {category: comment}}.
+
+    Sheet uses column D for sub-parameter (Heart Sounds / Pulse Quality / Capillary
+    Refill), column G for category value, column H for the comment text.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["CARDIOVASCULAR SYSTEM"]
+    label_to_key = {
+        "heart sounds": "heart_sounds",
+        "pulse quality": "pulse_quality",
+        "capillary refill": "capillary_refill",
+    }
+    ref = {"heart_sounds": {}, "pulse_quality": {}, "capillary_refill": {}}
+    current = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current = key
+        if not current:
+            continue
+        category = ws.cell(r, 7).value
+        comment = ws.cell(r, 8).value
+        if category and str(category).strip():
+            ref[current][str(category).strip()] = (str(comment).strip() if comment else "")
+    return ref
+
+
+# Page 5 left-page (Respiratory System). Three sub-parameters with capsule SVGs
+# under backgrounds/Boy/Page 5/<sub>/.
+RESPIRATORY_PILL_SVGS = {
+    "breath_sounds": {
+        "Normal/Vesicular": "breathing sound/Normal.svg",
+        "Wheezing": "breathing sound/Wheezing.svg",
+        "Crepitations": "breathing sound/Crepetations.svg",
+    },
+    "effort": {
+        "Easy/Normal": "effort/Normal.svg",
+        "Use of Accessory Muscles": "effort/UseOfAccesory.svg",
+    },
+    "cough": {
+        "Absent": "cough/Absent.svg",
+        "Productive": "cough/Productive.svg",
+        "Dry/Irritative": "cough/Dry-Irritative.svg",
+    },
+}
+
+RESPIRATORY_DEFAULTS = {
+    "breath_sounds": "Normal/Vesicular",
+    "effort": "Easy/Normal",
+    "cough": "Absent",
+}
+
+
+def load_respiratory_reference(xlsx_path):
+    """Read RESPIRATORY SYSTEM sheet -> {sub: {category: comment}}.
+
+    Column D = sub-parameter (Breath Sounds / Effort / Cough), column G = category,
+    column H = comment text.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["RESPIRATORY SYSTEM"]
+    label_to_key = {
+        "breath sounds": "breath_sounds",
+        "effort": "effort",
+        "cough": "cough",
+    }
+    ref = {"breath_sounds": {}, "effort": {}, "cough": {}}
+    current = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current = key
+        if not current:
+            continue
+        category = ws.cell(r, 7).value
+        comment = ws.cell(r, 8).value
+        if category and str(category).strip():
+            ref[current][str(category).strip()] = (str(comment).strip() if comment else "")
+    return ref
+
+
+# Page 8 (General Examination) — 11 sub-parameters split into two columns:
+#   LEFT  : pallor, icterus, cyanosis, clubbing, lympha_denopathy, skin_assessment
+#   RIGHT : allergy, bone_and_joint, posture, gait_and_coordination, puberty
+# Plus a Doctor Visit Recommended pill at bottom-right.
+GENERAL_PILL_SVGS = {
+    "pallor": {
+        "Absent": "pallor/Absent.svg",
+        "Mild": "pallor/Mild.svg",
+        "Significant": "pallor/Significant.svg",
+    },
+    "icterus": {
+        "Absent": "icterus/Absent.svg",
+        "Visible in Sclera": "icterus/Visible-in-scelera.svg",
+        "Visible in Skin": "icterus/Visible-in-skin.svg",
+    },
+    "cyanosis": {
+        "Absent": "cyanosis/Absent.svg",
+        "Peripheral (Tips)": "cyanosis/Peripheral.svg",
+        "Central": "cyanosis/Central.svg",
+    },
+    "clubbing": {
+        "Absent": "clubbing/Absent.svg",
+        "Grade 1-4": "clubbing/Grade-1-4.svg",
+    },
+    "lympha_denopathy": {
+        "Not Palpable": "lympha/Not-palpable.svg",
+        "Cervical (Neck)": "lympha/Cervical.svg",
+        "Axillary/Inguinal": "lympha/Axillary-inguinal.svg",
+    },
+    "skin_assessment": {
+        "Clear/Healthy": "skin assessment/Clear-Healthy.svg",
+        "Dry/Eczema": "skin assessment/Dry-Eczema.svg",
+        "Rash/Fungal": "skin assessment/Rash-Fungal.svg",
+        "Pigmentation": "skin assessment/Pigmentation.svg",
+    },
+    "allergy": {
+        "None Noted": "allergy/None-Noted.svg",
+        "Respiratory": "allergy/Respiratory.svg",
+        "Skin/Hives": "allergy/Skin-Hives.svg",
+        "Food-related": "allergy/Food-related.svg",
+    },
+    "bone_and_joint": {
+        "Normal Range": "bones and joint/Normal.svg",
+        "Tenderness": "bones and joint/Tenderness.svg",
+        "Swelling": "bones and joint/Swelling.svg",
+        "Deformity": "bones and joint/Deformity.svg",
+    },
+    "posture": {
+        "Excellent": "posture/Excellent.svg",
+        "Mild Slumping": "posture/Mild-slumping.svg",
+        "Scoliosis Suspicion": "posture/Scolosis-suspicion.svg",
+    },
+    "gait_and_coordination": {
+        "Steady/Normal": "gait and coordination/Normal.svg",
+        "Mild Limp": "gait and coordination/Mild-Limp.svg",
+        "Coordination Delay": "gait and coordination/Coordination-Delay.svg",
+    },
+    "puberty": {
+        "Pre-pubertal": "puberty/Pre-Pubertal.svg",
+        "Early Signs": "puberty/Early-Signs.svg",
+        "Age Appropriate": "puberty/Age-Appropriate.svg",
+    },
+}
+
+# Positive defaults used when the JSON has no value for a field (posture and
+# gait_and_coordination are absent from the current API).
+GENERAL_DEFAULTS = {
+    "pallor": "Absent",
+    "icterus": "Absent",
+    "cyanosis": "Absent",
+    "clubbing": "Absent",
+    "lympha_denopathy": "Not Palpable",
+    "skin_assessment": "Clear/Healthy",
+    "allergy": "None Noted",
+    "bone_and_joint": "Normal Range",
+    "posture": "Excellent",
+    "gait_and_coordination": "Steady/Normal",
+    "puberty": "Pre-pubertal",
+}
+
+
+def general_exam_normalize(field, value):
+    """Map a raw API value to a known Excel category for the given field.
+
+    Most fields use Excel category strings verbatim (after stripping whitespace).
+    Puberty is free-form text ("puberty changes appropriate for age."), so we
+    pattern-match it. Falls back to the positive default for unrecognized text.
+    """
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    if field == "puberty":
+        vl = v.lower()
+        if "pre" in vl and "pub" in vl:
+            return "Pre-pubertal"
+        if "early" in vl:
+            return "Early Signs"
+        if "age" in vl and "appropriate" in vl:
+            return "Age Appropriate"
+        if "appropriate" in vl:  # "puberty changes appropriate for age."
+            return "Age Appropriate"
+        return None
+    # Exact-match the Excel categories for this field if any exist.
+    options = GENERAL_PILL_SVGS.get(field, {})
+    if v in options:
+        return v
+    # Case/whitespace-insensitive match
+    for cat in options:
+        if cat.lower() == v.lower():
+            return cat
+    return None
+
+
+def doctor_visit_label_from_text(value):
+    """Map free-form doctor_visit text to 'YES' or 'NO'."""
+    v = (value or "").strip().lower()
+    if not v:
+        return "NO"
+    if v.startswith("no ") or "no doctor visit" in v or "not required" in v or "no immediate" in v:
+        return "NO"
+    return "YES"
+
+
+# Page 7 left-page (ENT Examination). Four sub-parameters with capsule SVGs
+# under backgrounds/Boy/Page 7/<sub>/. Categories match ENT Examination sheet col G.
+ENT_PILL_SVGS = {
+    "ears": {
+        "Clear & Normal": "ears/Normal.svg",
+        "Wax Buildup": "ears/Wax-Buildup.svg",
+        "Congested/Red": "ears/Congested.svg",
+    },
+    "nose": {
+        "Patent/Clear": "nose/Clear.svg",
+        "Deviated Septum": "nose/Deviated.svg",
+        "Allergic Rhinitis Signs": "nose/Allergic.svg",
+    },
+    "throat": {
+        "Healthy Mucosa": "throat/Healthy-Mucosa.svg",
+        "Tonsillar Hypertrophy": "throat/Tonsiliar-Hypertrophy.svg",
+        "Pharyngitis/Redness": "throat/Redness.svg",
+    },
+    "hearing_status": {
+        "Normal Hearing": "hearing status/Normal.svg",
+        "Mild Sensitivity Loss": "hearing status/Mild-Sensitivity-Loss.svg",
+        "Moderate Sensitivity Loss": "hearing status/Moderate-Sensitivity.svg",
+        "Invalid/Not Done": "hearing status/Invalid-Notdone.svg",
+    },
+}
+
+ENT_DEFAULTS = {
+    "ears": "Clear & Normal",
+    "nose": "Patent/Clear",
+    "throat": "Healthy Mucosa",
+    "hearing_status": "Normal Hearing",
+}
+
+
+# Page 7 LEFT page (Dental Examination). Seven sub-parameter pills arranged
+# in two columns + a Dentist Visit Recommended pill. SVG assets live under
+# backgrounds/Boy/Page 7/<sub-folder>/<Category>.svg. Category strings match
+# the API's `value` field for each sub-parameter (analyticMap.value keys the
+# dict below: dental_cavity / nursing_bottle_caries / gum_health /
+# other_condition / dental_fluorosis / alignment / oral_hygiene).
+DENTAL_PILL_SVGS = {
+    "dental_cavity": {
+        "None Noted": "dental cavity/None-Noted.svg",
+        "Early Decay/Spots": "dental cavity/Early-Decay.svg",
+        "Deep Cavities": "dental cavity/Deep-Cavities.svg",
+    },
+    "nursing_bottle_caries": {
+        "Not Present": "nursing bottle caries/Not Present.svg",
+        "Early Stage (White spots)": "nursing bottle caries/Early Stage.svg",
+        "Advanced Decay": "nursing bottle caries/Decay.svg",
+    },
+    "gum_health": {
+        "Healthy/Pink": "gum health/Healthy.svg",
+        "Mild Redness/BOP": "gum health/Mild-Redness.svg",
+        "Significant Swelling": "gum health/Swelling.svg",
+    },
+    "other_condition": {
+        "ABSENT": "other conditions/Not-Found.svg",
+        "Halitosis (Bad breath)": "other conditions/Haltosis.svg",
+        "Mouth Ulcers": "other conditions/Mouth-Ulcers.svg",
+        "Tongue Tie": "other conditions/Tongue-Tie.svg",
+    },
+    "dental_fluorosis": {
+        "Absent": "dental fluorosis/Absent.svg",
+        "Mild (Faint white lines)": "dental fluorosis/Mild.svg",
+        "Moderate/Severe": "dental fluorosis/Moderate.svg",
+    },
+    "alignment": {
+        "Normal/Steady": "alignment/Normal.svg",
+        "Crowding": "alignment/Crowding.svg",
+        "Malocclusion": "alignment/Malocclusion.svg",
+    },
+    "oral_hygiene": {
+        "Excellent": "oral hygiene/Excellent.svg",
+        "Plaque/Tartar Present": "oral hygiene/Plaque-Tartar.svg",
+        "Significant Buildup": "oral hygiene/Significant-Buildup.svg",
+    },
+}
+
+# Pill labels rendered on top of each capsule SVG. Defaults to the filename
+# (minus extension, dashes → spaces); override here when the SVG name reads
+# awkwardly (e.g. "Not Found" → "Absent" for the positive Other-Conditions case).
+DENTAL_PILL_LABELS = {
+    ("other_condition", "ABSENT"): "Absent",
+}
+
+# Positive defaults per sub-parameter (used when JSON lacks a value).
+DENTAL_DEFAULTS = {
+    "dental_cavity": "None Noted",
+    "nursing_bottle_caries": "Not Present",
+    "gum_health": "Healthy/Pink",
+    "other_condition": "ABSENT",
+    "dental_fluorosis": "Absent",
+    "alignment": "Normal/Steady",
+    "oral_hygiene": "Excellent",
+}
+
+
+def dental_normalize(field, value):
+    """Map a raw API value to a known dental category for the given field.
+
+    API value strings already match the Excel/SVG category names verbatim, so
+    a case/whitespace-insensitive match is enough. Returns None for unknowns.
+    """
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    options = DENTAL_PILL_SVGS.get(field, {})
+    if v in options:
+        return v
+    for cat in options:
+        if cat.lower() == v.lower():
+            return cat
+    return None
+
+
+def dental_visit_label_from_text(value):
+    """Map dentist-visit free-form text -> 'YES' (visit) or 'NO' (routine)."""
+    v = (value or "").strip().lower()
+    if not v:
+        return "NO"
+    if "visit" in v and "dentist" in v:
+        return "YES"
+    return "NO"
+
+
+def load_dental_reference(xlsx_path):
+    """Read 'DENTAL CHCEKUP' (sic) sheet -> {sub_param_key: {category: comment}}.
+
+    Column D holds the sub-parameter label (DENTAL CAVITIES / GUM HEALTH /
+    ALIGNMENT/BITE / NURSING BOTTLE CARIES / DENTAL FLUOROSIS / OTHER CONDITIONS
+    / ORAL HYGIENE); G is the category value; H is the comment/observation text.
+    Each sub-parameter spans several rows; D is set only on its first row.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["DENTAL CHCEKUP"]
+    label_to_key = {
+        "dental cavities": "dental_cavity",
+        "gum health": "gum_health",
+        "alignment/bite": "alignment",
+        "nursing bottle caries": "nursing_bottle_caries",
+        "dental fluorosis": "dental_fluorosis",
+        "other conditions": "other_condition",
+        "oral hygiene": "oral_hygiene",
+    }
+    ref = {k: {} for k in set(label_to_key.values())}
+    current = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current = key
+        if not current:
+            continue
+        category = ws.cell(r, 7).value
+        comment = ws.cell(r, 8).value
+        if category and str(category).strip():
+            ref[current][str(category).strip()] = (str(comment).strip() if comment else "")
+    return ref
+
+
+def load_general_examination_reference(xlsx_path):
+    """Read the 'General Examination ' sheet -> {field_key: {category: comment}}.
+
+    Column D = sub-parameter label (e.g. 'Pallor', 'ICTERUS', 'BONES & JOINTS').
+    Column G = category value, column H = comment/observation text. Each
+    sub-parameter spans multiple rows; D is only set on its first row.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["General Examination "]
+    label_to_key = {
+        "pallor": "pallor",
+        "icterus": "icterus",
+        "cyanosis": "cyanosis",
+        "clubbing": "clubbing",
+        "lympha- denopathy": "lympha_denopathy",
+        "lympha-denopathy": "lympha_denopathy",
+        "lympha denopathy": "lympha_denopathy",
+        "skin assessment": "skin_assessment",
+        "allergy": "allergy",
+        "bones & joints": "bone_and_joint",
+        "bones and joints": "bone_and_joint",
+        "posture": "posture",
+        "gait & co ordination": "gait_and_coordination",
+        "gait and coordination": "gait_and_coordination",
+        "gait and co ordination": "gait_and_coordination",
+        "puberty": "puberty",
+    }
+    ref = {k: {} for k in set(label_to_key.values())}
+    current = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current = key
+        if not current:
+            continue
+        category = ws.cell(r, 7).value
+        comment = ws.cell(r, 8).value
+        if category and str(category).strip():
+            ref[current][str(category).strip()] = (str(comment).strip() if comment else "")
+    return ref
+
+
+def load_ent_reference(xlsx_path):
+    """Read the ENT Examination sheet -> {sub_param: {category: {'comment','fact'}}}.
+
+    Column D = sub-parameter (EARS / NOSE / THROAT / HEARING STATUS),
+    column G = category value, column H = comment/observation text,
+    column K = fact text (only present on Normal Hearing — used for the
+    audiometry context box at the bottom of the right page).
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["ENT Examination"]
+    label_to_key = {
+        "ears (hearing & canal)": "ears",
+        "ears": "ears",
+        "nose (airways)": "nose",
+        "nose": "nose",
+        "throat (oral cavity)": "throat",
+        "throat": "throat",
+        "hearing status": "hearing_status",
+    }
+    ref = {"ears": {}, "nose": {}, "throat": {}, "hearing_status": {}}
+    current = None
+    for r in range(3, ws.max_row + 1):
+        d_val = ws.cell(r, 4).value
+        if d_val and str(d_val).strip():
+            key = label_to_key.get(str(d_val).strip().lower())
+            if key:
+                current = key
+        if not current:
+            continue
+        category = ws.cell(r, 7).value
+        comment = ws.cell(r, 8).value
+        fact = ws.cell(r, 11).value
+        if category and str(category).strip():
+            ref[current][str(category).strip()] = {
+                "comment": (str(comment).strip() if comment else ""),
+                "fact": (str(fact).strip() if fact else ""),
+            }
+    return ref
+
+
+# Page 5 right-page (Personal Hygiene). Categories on the 3-point scale.
+HYGIENE_CATEGORIES = ["Needs Attention", "Moderate", "Excellent"]
+
+
+def hygiene_category_from_text(value, comment=""):
+    """Map API hygiene text -> 'Excellent' | 'Moderate' | 'Needs Attention'."""
+    t = " ".join(str(x or "") for x in (value, comment)).lower()
+    if not t.strip():
+        return "Excellent"
+    if "moderate" in t or "moderately" in t or "fair" in t:
+        return "Moderate"
+    if "unclean" in t or "poorly" in t or "significant wax" in t or "buildup" in t or "needs attention" in t or "poor" in t:
+        return "Needs Attention"
+    return "Excellent"
+
+
+def load_hygiene_reference(xlsx_path):
+    """Read Personal Hyiegne sheet. Returns {category: comment_text} (shared by hair and nail)."""
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["Personal Hyiegne"]
+    ref = {}
+    for r in range(3, ws.max_row + 1):
+        category = ws.cell(r, 7).value  # G
+        guidance = ws.cell(r, 10).value  # J - Parental Guidence
+        if category and str(category).strip() and guidance and str(guidance).strip():
+            cat = str(category).strip()
+            if cat not in ref:
+                ref[cat] = str(guidance).strip()
+    return ref
+
+
+def load_vitals_reference(xlsx_path):
+    """Read the VITALS sheet and return the multi-section guidance text from J4.
+
+    J4 packs three condition sections separated by blank lines:
+      NORMAL (...) / HIGH PULSE RATE (...) / LOW OXYGEN (...)
+    Returns {"normal": "...", "high_pulse": "...", "low_oxygen": "..."},
+    each containing the "Outlook / Actions" lines stripped of the header line.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["VITALS"]
+    raw = ws.cell(4, 10).value or ""  # J4
+    sections = {"normal": "", "high_pulse": "", "low_oxygen": ""}
+    # Split on blank-line paragraph break ("\n\n")
+    for paragraph in re.split(r"\n\s*\n", raw):
+        lines = [ln for ln in (l.strip() for l in paragraph.splitlines()) if ln]
+        if not lines:
+            continue
+        header = lines[0].lower()
+        body = "\n".join(lines[1:]) if len(lines) > 1 else "\n".join(lines)
+        if "normal" in header and "high" not in header and "low" not in header:
+            sections["normal"] = body
+        elif "high pulse" in header or "high pulse rate" in header:
+            sections["high_pulse"] = body
+        elif "low oxygen" in header:
+            sections["low_oxygen"] = body
+    return sections
+
+
+def vitals_pick_section(ref, pulse, oxygen):
+    """Choose the matching VITALS conclusion paragraph for the actual readings.
+
+    Priority: LOW OXYGEN > HIGH PULSE > NORMAL. Returns the body text or ''.
+    """
+    try:
+        p = float(pulse) if pulse not in ("", None) else None
+    except (TypeError, ValueError):
+        p = None
+    try:
+        o = float(oxygen) if oxygen not in ("", None) else None
+    except (TypeError, ValueError):
+        o = None
+    if o is not None and o < 95:
+        return ref.get("low_oxygen", "")
+    if p is not None and p > 120:
+        return ref.get("high_pulse", "")
+    return ref.get("normal", "")
+
+
+def vitals_observation_label(pulse, oxygen):
+    """Short status label for the 'Observation:' field on Page 3 right."""
+    try:
+        p = float(pulse) if pulse not in ("", None) else None
+    except (TypeError, ValueError):
+        p = None
+    try:
+        o = float(oxygen) if oxygen not in ("", None) else None
+    except (TypeError, ValueError):
+        o = None
+    if o is not None and o < 95:
+        return "Low Oxygen"
+    if p is not None and p > 120:
+        return "High Pulse Rate"
+    if p is None and o is None:
+        return ""
+    return "Normal"
+
+
+def _system_summary_rating(data_dict, defaults, severity_map):
+    """Generic 'excellent / fair / poor' rating for a system.
+
+    Compares each sub-parameter's actual category to the positive default.
+    Returns 'excellent' when every sub-param matches its default, otherwise
+    the worst severity level recorded for any deviation. Unknown deviations
+    default to 'fair'. Returns None only if there are no defaults to compare.
+    """
+    if not defaults:
+        return None
+    worst = "excellent"
+    rank = {"excellent": 0, "fair": 1, "poor": 2}
+    for key, default_cat in defaults.items():
+        actual = (data_dict or {}).get(key) or default_cat
+        if actual == default_cat:
+            continue
+        level = severity_map.get(actual, "fair")
+        if rank[level] > rank[worst]:
+            worst = level
+    return worst
+
+
+def nervous_summary_rating(nervous_data):
+    severity = {
+        "Drowsy": "fair", "Irritable": "fair",
+        "Weakness Noted": "poor",
+        "Diminished": "fair", "Asymmetrical": "fair",
+    }
+    return _system_summary_rating(nervous_data, NERVOUS_DEFAULTS, severity)
+
+
+def cardio_summary_rating(cardio_data):
+    severity = {
+        "Murmur Noted": "poor", "Tachycardia": "fair",
+        "Delayed": "fair",
+        "Weak": "fair", "Irregular": "poor",
+    }
+    return _system_summary_rating(cardio_data, CARDIO_DEFAULTS, severity)
+
+
+def respiratory_summary_rating(respiratory_data):
+    severity = {
+        "Wheezing": "fair", "Crepitations": "poor",
+        "Use of Accessory Muscles": "poor",
+        "Productive": "fair", "Dry/Irritative": "fair",
+    }
+    return _system_summary_rating(respiratory_data, RESPIRATORY_DEFAULTS, severity)
+
+
+def ent_summary_rating(ent_data):
+    severity = {
+        "Wax Buildup": "fair", "Congested/Red": "fair",
+        "Deviated Septum": "fair", "Allergic Rhinitis Signs": "fair",
+        "Tonsillar Hypertrophy": "fair", "Pharyngitis/Redness": "fair",
+        "Mild Sensitivity Loss": "fair", "Moderate Sensitivity Loss": "poor",
+        "Invalid/Not Done": "fair",
+    }
+    return _system_summary_rating(ent_data, ENT_DEFAULTS, severity)
+
+
+def dental_summary_rating(dental_data):
+    severity = {
+        "Early Decay/Spots": "fair", "Deep Cavities": "poor",
+        "Early Stage (White spots)": "fair", "Advanced Decay": "poor",
+        "Mild Redness/BOP": "fair", "Significant Swelling": "poor",
+        "Halitosis (Bad breath)": "fair", "Mouth Ulcers": "fair",
+        "Tongue Tie": "fair",
+        "Mild (Faint white lines)": "fair", "Moderate/Severe": "poor",
+        "Crowding": "fair", "Malocclusion": "fair",
+        "Plaque/Tartar Present": "fair", "Significant Buildup": "poor",
+    }
+    return _system_summary_rating(dental_data, DENTAL_DEFAULTS, severity)
+
+
+def hemoglobin_summary_rating(blood_work):
+    """Map hemoglobin info (API text + comment) -> rating. Returns None if absent."""
+    text = " ".join(
+        str(blood_work.get(k, "") or "") for k in ("hemoglobin_text", "hemoglobin_comment")
+    ).lower()
+    if not text.strip():
+        return None
+    if "severe" in text or "moderate" in text:
+        return "poor"
+    if "mild" in text:
+        return "fair"
+    if "anemic" in text and "non" not in text:
+        return "poor"
+    if "below" in text:
+        return "poor"
+    if "normal" in text or "no signs of anemia" in text or "non-anemic" in text:
+        return "excellent"
+    return None
+
+
+def load_bmi_reference(xlsx_path):
+    """Read the 'BMI' sheet and return {category_lower: {doctor_visit, conclusion, fact, range, foods}}.
+
+    Column layout (BMI sheet): H=category, I=doctor visit, J=parental guidance
+    (conclusion), K=fact, L=range, M=foods.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb["BMI "]  # note: the sheet name has a trailing space in the source file
+
+    def clean(v):
+        return str(v).strip() if v is not None else ""
+
+    ref = {}
+    for r in range(3, ws.max_row + 1):
+        category = clean(ws.cell(r, 8).value)  # column H
+        if not category:
+            continue
+        ref[category.lower()] = {
+            "category": category,
+            "doctor_visit": clean(ws.cell(r, 9).value),    # I
+            "conclusion": clean(ws.cell(r, 10).value),     # J
+            "fact": clean(ws.cell(r, 11).value),           # K
+            "range": clean(ws.cell(r, 12).value),          # L
+            "foods": clean(ws.cell(r, 13).value),          # M
+        }
+    return ref
+
+
+def parse_production_student(entry):
+    """Parse one studentsData[] entry into the flat shape the generator expects.
+
+    Production shape (new API):
+      { "student": { ..., "school": {...} }, "campData": [ {parameter, subParameter, value, comment}, ... ] }
+
+    Extracts the student/school block, a screening date from campData[].camp.camp_date,
+    and BIOMETRICS & VITALS measurements (height/weight/bmi/pulse/oxymetry/hemoglobin).
+    The BMI category is computed from the bmi value.
+    """
+    student_raw = entry.get("student", {}) or {}
+    school = student_raw.get("school", {}) or {}
+    camp_data = entry.get("campData", []) or []
+
+    gender = (student_raw.get("gender") or "").upper()
+    sex = gender[0] if gender else ""
+
+    # Screening date: first camp_date found in campData
+    screening_date = ""
+    for item in camp_data:
+        camp_date = (item.get("camp") or {}).get("camp_date")
+        if camp_date:
+            screening_date = _iso_to_ddmmyyyy(camp_date)
+            break
+
+    student = {
+        "name": student_raw.get("name", ""),
+        "dob": _iso_to_ddmmyyyy(student_raw.get("date_of_birth", "")),
+        "sex": sex,
+        "class": student_raw.get("class", ""),
+        "section": student_raw.get("section", ""),
+        "roll_no": student_raw.get("roll_number", ""),
+        "admission_no": student_raw.get("admission_number", ""),
+        "clara_id": student_raw.get("claraId", ""),
+    }
+
+    # BIOMETRICS & VITALS — keyed by analyticMap.value (note source typos: oximetery, heamoglobin)
+    # PERSONAL HYGIENE — keyed similarly (nail_hygeine, hair_hyiegne, ear_hygiene)
+    # GENERAL EXAMINATION — pallor / icterus / cyanosis / clubbing / lympha_denopathy /
+    #   skin_assessment / allergy / bone_and_joint / puberty / doctor_visit (posture and
+    #   gait_and_coordination not yet provided by the API).
+    measurements, vitals, blood_work = {}, {}, {}
+    hygiene = {}
+    general = {}
+    dental = {}
+    for item in camp_data:
+        pname = (item.get("parameter") or {}).get("name", "")
+        akey = ((item.get("subParameter") or {}).get("analyticMap") or {}).get("value", "")
+        val = item.get("value", "") or ""
+        com = item.get("comment", "") or ""
+        if pname == "BIOMETRICS & VITALS":
+            if akey == "height":
+                measurements["height"] = val
+            elif akey == "weight":
+                measurements["weight"] = val
+            elif akey == "bmi":
+                measurements["bmi"] = val
+            elif akey == "pulse_rate":
+                vitals["pulse_rate"] = val
+            elif akey == "oximetery":
+                vitals["oxymetry"] = val
+            elif akey == "heamoglobin":
+                blood_work["hemoglobin_text"] = val
+                blood_work["hemoglobin_comment"] = com
+        elif pname == "PERSONAL HYGIENE":
+            if akey == "nail_hygeine":
+                hygiene["nail_value"] = val
+                hygiene["nail_comment"] = com
+            elif akey == "hair_hyiegne":
+                hygiene["hair_value"] = val
+                hygiene["hair_comment"] = com
+            elif akey == "ear_hygiene":
+                hygiene["ear_value"] = val
+                hygiene["ear_comment"] = com
+        elif pname == "GENERAL EXAMINATION":
+            # Field name for the SVG/Excel mapping == analyticMap.value, with one
+            # rename: doctor_visit text is rendered as a YES/NO pill.
+            general[akey] = {"value": val, "comment": com}
+        elif pname == "DENTAL CHECKUP":
+            # akey ∈ {dental_cavity, nursing_bottle_caries, gum_health,
+            # other_condition, dental_fluorosis, alignment, oral_hygiene,
+            # dental_visit}. dental_visit drives the YES/NO pill at bottom-left.
+            dental[akey] = {"value": val, "comment": com}
+
+    return {
+        "camp_name": school.get("schoolName", ""),
+        "clara_id_camp": school.get("claraId", ""),
+        "screening_date": screening_date,
+        "report_year": str(datetime.now().year),
+        "student": student,
+        "measurements": measurements,
+        "vitals": vitals,
+        "blood_work": blood_work,
+        "hygiene": hygiene,
+        "general": general,
+        "dental": dental,
+        "bmi_category": bmi_category_from_value(measurements.get("bmi")),
+    }
+
+
+def load_report_data(json_path, student_index=0):
+    """Load JSON and normalize to the generator's flat shape.
+
+    Accepts three shapes:
+      1. Production: {"data": {"studentsData": [ {student, campData}, ... ]}}
+      2. Already-flat test JSON (has top-level "student").
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    data = raw.get("data", raw)
+    students = data.get("studentsData")
+    if isinstance(students, list) and students:
+        return parse_production_student(students[student_index])
+
+    # Already-flat test JSON
+    return raw
+
+
+# ---------- Fonts ----------
+
+# ReportLab font names for the Clara typography system (see clara_font_reference).
+# These are the names we register the TTFs under and reference everywhere via
+# the FONTS style map below. Roboto static cuts are instanced from the Google
+# Fonts variable font (wght + wdth axes); Bebas Neue is the OFL static face.
+#   Roboto Light(300) / Regular(400) / Medium(500) / Bold(700) / Black(900)
+#   Roboto Condensed Regular(400, 75% width) / Bold(700, 75% width)
+#   Bebas Neue Regular
+# Helvetica (FEV₁ subscript) and Lucida Grande (vision-table arrows) are Page-6
+# only; Page 6 is rendered background-only, so Helvetica falls back to the
+# ReportLab built-in and Lucida Grande needs no registration.
+ROBOTO_FONT_FILES = [
+    ("Roboto-Light", "Roboto-Light.ttf"),
+    ("Roboto", "Roboto-Regular.ttf"),
+    ("Roboto-Medium", "Roboto-Medium.ttf"),
+    ("Roboto-Bold", "Roboto-Bold.ttf"),
+    ("Roboto-Black", "Roboto-Black.ttf"),
+    ("RobotoCondensed", "RobotoCondensed-Regular.ttf"),
+    ("RobotoCondensed-Bold", "RobotoCondensed-Bold.ttf"),
+    ("BebasNeue", "BebasNeue-Regular.ttf"),
+]
+
+
+def register_fonts(fonts_folder):
+    """Register the Clara Roboto/Bebas typography set. Returns True if the core
+    Roboto faces registered (the FONTS map falls back to Helvetica otherwise)."""
+    if not fonts_folder or not os.path.exists(fonts_folder):
+        return False
+
+    registered = set()
+    for name, filename in ROBOTO_FONT_FILES:
+        path = os.path.join(fonts_folder, filename)
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont(name, path))
+                registered.add(name)
+            except Exception as e:
+                print(f"⚠️  Failed to register {filename}: {e}")
+        else:
+            print(f"⚠️  Missing font file: {path}")
+
+    # Core faces required to consider the custom typography "available".
+    core = {"Roboto-Light", "Roboto", "Roboto-Bold", "Roboto-Black", "BebasNeue"}
+    return core.issubset(registered)
+
+
+# ---------- Generator ----------
+
+class ClaraBoyReportGenerator:
+    """Generates the 8-spread Boy report (19x13in book format)."""
+
+    def __init__(self, backgrounds_root, fonts_folder=None, xlsx_path=None):
+        # backgrounds_root should point to `backgrounds/Boy`
+        self.backgrounds_root = backgrounds_root
+        self.has_custom_fonts = register_fonts(fonts_folder) if fonts_folder else False
+        self.xlsx_path = xlsx_path
+        self._bmi_ref = None
+        self._vitals_ref = None
+        self._nervous_ref = None
+        self._anemia_ref = None
+        self._cardio_ref = None
+        self._respiratory_ref = None
+        self._hygiene_ref = None
+        self._ent_ref = None
+        self._general_ref = None
+        self._dental_ref = None
+
+    def bmi_reference(self):
+        """Lazy-load and cache the BMI reference sheet."""
+        if self._bmi_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._bmi_ref = load_bmi_reference(self.xlsx_path)
+        return self._bmi_ref or {}
+
+    def vitals_reference(self):
+        """Lazy-load and cache the VITALS reference sheet."""
+        if self._vitals_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._vitals_ref = load_vitals_reference(self.xlsx_path)
+        return self._vitals_ref or {}
+
+    def nervous_reference(self):
+        """Lazy-load and cache the NERVOUS SYSTEM reference sheet."""
+        if self._nervous_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._nervous_ref = load_nervous_system_reference(self.xlsx_path)
+        return self._nervous_ref or {}
+
+    def anemia_reference(self):
+        """Lazy-load and cache the ANEMIA reference sheet."""
+        if self._anemia_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._anemia_ref = load_anemia_reference(self.xlsx_path)
+        return self._anemia_ref or {}
+
+    def cardio_reference(self):
+        """Lazy-load and cache the CARDIOVASCULAR SYSTEM reference sheet."""
+        if self._cardio_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._cardio_ref = load_cardio_reference(self.xlsx_path)
+        return self._cardio_ref or {}
+
+    def respiratory_reference(self):
+        """Lazy-load and cache the RESPIRATORY SYSTEM reference sheet."""
+        if self._respiratory_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._respiratory_ref = load_respiratory_reference(self.xlsx_path)
+        return self._respiratory_ref or {}
+
+    def hygiene_reference(self):
+        """Lazy-load and cache the Personal Hyiegne reference sheet."""
+        if self._hygiene_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._hygiene_ref = load_hygiene_reference(self.xlsx_path)
+        return self._hygiene_ref or {}
+
+    def ent_reference(self):
+        """Lazy-load and cache the ENT Examination reference sheet."""
+        if self._ent_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._ent_ref = load_ent_reference(self.xlsx_path)
+        return self._ent_ref or {}
+
+    def general_examination_reference(self):
+        """Lazy-load and cache the General Examination reference sheet."""
+        if self._general_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._general_ref = load_general_examination_reference(self.xlsx_path)
+        return self._general_ref or {}
+
+    def dental_reference(self):
+        """Lazy-load and cache the DENTAL CHCEKUP reference sheet."""
+        if self._dental_ref is None and self.xlsx_path and os.path.exists(self.xlsx_path):
+            self._dental_ref = load_dental_reference(self.xlsx_path)
+        return self._dental_ref or {}
+
+    def _draw_overlay_svg(self, c, svg_relpath, x, y, w, h):
+        """Place the first embedded PNG of a Page-folder SVG asset at (x, y) with size (w, h).
+
+        svg_relpath is relative to backgrounds_root (e.g. 'Page 3/mental/Alert.svg').
+        """
+        full_path = os.path.join(self.backgrounds_root, svg_relpath)
+        placed = parse_svg_images(full_path)
+        if not placed:
+            return
+        pil = Image.open(BytesIO(placed[0]["png_bytes"]))
+        c.drawImage(ImageReader(pil), x, y, width=w, height=h,
+                    preserveAspectRatio=False, mask="auto")
+
+    def _draw_pill_capsule(self, c, svg_relpath, x_left, y_center, w=170, h=46):
+        """Place a status-capsule (Doctor Visit Yes/No, Normal Observation) at
+        (x_left = pill left edge, y_center = pill vertical centre).
+
+        The capsule asset is a coloured PNG shape with its answer text baked as a
+        vector <text> element. resvg only renders that text if the system has the
+        SVG's font (Arial) installed — which fails on bare Linux/Docker. So we
+        place the capsule PNG shape and re-draw its text with our embedded
+        Roboto-Bold instead — identical look, works everywhere.
+        """
+        full_path = os.path.join(self.backgrounds_root, svg_relpath)
+        if not os.path.exists(full_path):
+            return
+        self._draw_overlay_svg(c, svg_relpath, x_left, y_center - h / 2, w, h)
+        text = svg_text_content(full_path)
+        if text:
+            self._draw_pill_label(c, text, x_left, y_center, w)
+
+    # Semantic style -> Roboto/Bebas face, per clara_font_reference. Each role
+    # maps to the exact font the designer specified for that kind of text.
+    #   patient   : Bebas Neue — Page-1 patient detail values (Name/DOB/Sex…)
+    #   footer    : Roboto Black — repeating Clara ID footer
+    #   fact      : Roboto Black — fact / stat callout boxes
+    #   title     : Roboto Bold — section/page titles (38pt)
+    #   label     : Roboto Bold — section field labels, Normal Range, comments-header
+    #   pill      : Roboto Bold — status pills (Normal, Alert, NO, …)
+    #   value     : Roboto Light — big numeric values + units
+    #   body      : Roboto Light — body paragraphs + sub-descriptions
+    #   category  : Roboto Regular — summary category labels, parental guidance
+    #   food      : Roboto Medium — food labels (Leafy Veggies, Beets, …)
+    #   condensed / condensed_bold : Roboto Condensed — Page-1 prevention tagline
+    _STYLE_TO_FACE = {
+        "patient": "BebasNeue",
+        "footer": "Roboto-Black",
+        "fact": "Roboto-Black",
+        "title": "Roboto-Bold",
+        "label": "Roboto-Bold",
+        "pill": "Roboto-Bold",
+        "value": "Roboto-Light",
+        "body": "Roboto-Light",
+        "category": "Roboto",
+        "food": "Roboto-Medium",
+        "condensed": "RobotoCondensed",
+        "condensed_bold": "RobotoCondensed-Bold",
+        # legacy aliases used by older call sites
+        "regular": "Roboto-Light",
+        "bold": "Roboto-Bold",
+        "heading": "Roboto-Bold",
+        "data": "Roboto-Bold",
+    }
+
+    # Helvetica fallback when the Roboto/Bebas faces failed to register.
+    _STYLE_TO_FALLBACK = {
+        "value": "Helvetica",
+        "body": "Helvetica",
+        "category": "Helvetica",
+        "patient": "Helvetica-Bold",
+        "condensed": "Helvetica",
+        "condensed_bold": "Helvetica-Bold",
+    }
+
+    def font(self, style="body"):
+        """Return the registered font name for a semantic typography role."""
+        if self.has_custom_fonts:
+            return self._STYLE_TO_FACE.get(style, "Roboto-Light")
+        return self._STYLE_TO_FALLBACK.get(style, "Helvetica-Bold")
+
+    def _draw_clara_footer(self, c, clara_id, left=True, right=True):
+        """Draw the repeating Clara ID footer — Roboto Black 12pt #080606."""
+        if not clara_id:
+            return
+        c.setFillColor(NEAR_BLACK)
+        c.setFont(self.font("footer"), 12)
+        if left:
+            c.drawString(*CLARA_ID_LEFT_POS, clara_id)
+        if right:
+            c.drawString(*CLARA_ID_RIGHT_POS, clara_id)
+
+    def _draw_pill_label(self, c, label, pill_x, pill_cy, pill_w,
+                         max_size=18, min_size=9, color=TEXT_WHITE):
+        """Center a status-pill label in its capsule — Roboto Bold (#FFFFFF),
+        18pt per the reference, auto-shrunk to fit the pill width."""
+        font_name = self.font("pill")
+        fs = max_size
+        # Shrink until the label fits inside ~90% of the pill width.
+        while fs > min_size and c.stringWidth(label, font_name, fs) > pill_w * 0.9:
+            fs -= 0.5
+        c.setFillColor(color)
+        c.setFont(font_name, fs)
+        tw = c.stringWidth(label, font_name, fs)
+        c.drawString(pill_x + (pill_w - tw) / 2, pill_cy - fs * 0.32, label)
+
+    def _draw_value_with_unit(self, c, value, unit, x, y, color,
+                              value_size=38, unit_size=18, gap=3):
+        """Draw a big numeric value + trailing unit on one baseline.
+        Both are Roboto Light (clara_font_reference 'big numeric values' = 38pt,
+        unit = 18pt); hemoglobin overrides value_size to 46pt."""
+        value_font = self.font("value")
+        c.setFillColor(color)
+        c.setFont(value_font, value_size)
+        c.drawString(x, y, value)
+        if unit:
+            vw = c.stringWidth(value, value_font, value_size)
+            c.setFont(value_font, unit_size)
+            c.drawString(x + vw + gap, y, unit)
+
+    def _page_svg(self, page_num):
+        return os.path.join(self.backgrounds_root, f"Page {page_num}", f"Page{page_num}.svg")
+
+    def generate(self, data, output_path):
+        c = pdf_canvas.Canvas(output_path, pagesize=PAGE_SIZE)
+
+        # Page 1 — cover + student info (with data overlay)
+        draw_background(c, self._page_svg(1))
+        self._draw_page1_overlay(c, data)
+        c.showPage()
+
+        # Page 2 — BMI (left page data overlay; right "Summary" page background only)
+        draw_background(c, self._page_svg(2))
+        self._draw_page2_overlay(c, data)
+        c.showPage()
+
+        # Page 3 — Nervous System (left, no data yet) + Vitals (right) overlay
+        draw_background(c, self._page_svg(3))
+        self._draw_page3_overlay(c, data)
+        c.showPage()
+
+        # Page 4 — Anemia Screening (left) + Cardiovascular System (right)
+        draw_background(c, self._page_svg(4))
+        self._draw_page4_overlay(c, data)
+        c.showPage()
+
+        # Page 5 — Respiratory System (left) + Personal Hygiene (right)
+        draw_background(c, self._page_svg(5))
+        self._draw_page5_overlay(c, data)
+        c.showPage()
+
+        # Pages 6-8. Page 6 is background-only. Page 7 overlays ENT. Page 8 overlays
+        # General Examination.
+        for page_num in range(6, 9):
+            svg = self._page_svg(page_num)
+            if os.path.exists(svg):
+                draw_background(c, svg)
+                if page_num == 7:
+                    self._draw_page7_overlay(c, data)
+                elif page_num == 8:
+                    self._draw_page8_overlay(c, data)
+            else:
+                c.setFont(self.font("regular"), 14)
+                c.drawString(72, PAGE_HEIGHT - 100, f"Page {page_num} background missing")
+            c.showPage()
+
+        c.save()
+
+    # ---------- Page 1: Cover ----------
+
+    def _draw_page1_overlay(self, c, data):
+        """Overlay student info on the right page of Spread 1.
+
+        Right page background sits at SVG (x=2850, y=196, w=2481, h=3508),
+        which maps to PDF (x=684, y=47, w=595, h=842) — the right half.
+
+        Coordinates were calibrated by overlaying a 10-PDF-pt grid on the
+        rendered right page and reading off each label's colon baseline.
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+
+        today = datetime.now().strftime("%d/%m/%Y")
+        screening_date = data.get("screening_date") or today
+        report_year = data.get("report_year") or str(datetime.now().year)
+
+        # Per-field (x, y) positions in PDF points, supplied from the layout editor.
+        # NOTE: report_year, date_of_screening, name, and bottom clara_id are still
+        # estimates — awaiting their exact coords from the editor's field list.
+        pos = {
+            "report_year": (930, 693),       # estimate
+            "date_of_screening": (860, 666), # estimate
+            "name": (785.6, 589.2),          # editor-marked
+            "dob": (784.4, 565.2),
+            "sex": (784.4, 545.1),
+            "class": (807.1, 526.2),
+            "section": (798.3, 506.0),
+            "roll_no": (797.0, 487.1),
+            "clara_id_top": (1175.0, 694.5),
+        }
+
+        # Top header line: report year + date of screening + top-right Clara ID.
+        # Roboto Bold 12pt #B2E2F2 (clara_font_reference, Page 1).
+        c.setFillColor(HEADING_BLUE)
+        c.setFont(self.font("label"), 12)
+        c.drawString(*pos["report_year"], str(report_year))
+        c.drawString(*pos["clara_id_top"], clara_id)
+        c.drawString(*pos["date_of_screening"], screening_date)
+
+        # Student data block — Bebas Neue Regular 16pt #8EC8D1.
+        c.setFillColor(PATIENT_TEAL)
+        c.setFont(self.font("patient"), 16)
+        for key in ("name", "dob", "sex", "class", "section", "roll_no"):
+            value = student.get(key, "")
+            if value:
+                c.drawString(*pos[key], str(value))
+
+        # Bottom blue strip Clara IDs on both left and right pages of the spread.
+        self._draw_clara_footer(c, clara_id)
+
+    # ---------- Page 2: BMI ----------
+
+    def _draw_wrapped(self, c, text, x, y, max_width, font_name, font_size, leading, color=colors.white, max_lines=None):
+        """Draw left-aligned wrapped text downward from baseline y. Returns the y after the last line.
+
+        Honors explicit newlines in `text`; wraps each paragraph to max_width.
+        Empty paragraphs (e.g. from "\\n\\n") render as a blank line gap.
+        """
+        c.setFont(font_name, font_size)
+        c.setFillColor(color)
+        cur_y = y
+        lines_drawn = 0
+        for paragraph in text.split("\n"):
+            if not paragraph.strip():
+                # blank line — advance by one leading without drawing
+                cur_y -= leading
+                lines_drawn += 1
+                if max_lines and lines_drawn >= max_lines:
+                    return cur_y
+                continue
+            words = paragraph.split()
+            line = ""
+            for word in words:
+                trial = (line + " " + word).strip()
+                if c.stringWidth(trial, font_name, font_size) <= max_width:
+                    line = trial
+                else:
+                    if line:
+                        c.drawString(x, cur_y, line)
+                        cur_y -= leading
+                        lines_drawn += 1
+                        if max_lines and lines_drawn >= max_lines:
+                            return cur_y
+                    line = word
+            if line:
+                c.drawString(x, cur_y, line)
+                cur_y -= leading
+                lines_drawn += 1
+                if max_lines and lines_drawn >= max_lines:
+                    return cur_y
+        return cur_y
+
+    def _draw_page2_overlay(self, c, data):
+        """Overlay BMI data on the left page of Spread 2.
+
+        Left page background sits at SVG (x=369, y=196) — PDF x≈88..684.
+        Coordinates below are first-pass estimates (read off a 20-pt grid on
+        the rendered page) and will be refined with editor coords.
+
+        Renders: Height/Weight/BMI values, the Excel conclusion (col J) and
+        Fact (col K) for the WHO BMI category. Observation left blank; category
+        highlight pill + weight pill + scale marker are deferred (coords pending).
+        """
+        measurements = data.get("measurements", {})
+        category = data.get("bmi_category", "")
+        clara_id = data.get("student", {}).get("clara_id", "")
+        ref = self.bmi_reference().get(category.lower(), {})
+
+        # ── Height / Weight / BMI values (after their labels, top-left) ──
+        # Roboto Bold 12pt #B2E2F2 (clara_font_reference, Page 2:
+        # "Height: XXX cm / Weight: XX kg / BMI:" = Roboto Bold 12pt #B2E2F2).
+        c.setFillColor(HEADING_BLUE)
+        c.setFont(self.font("label"), 12)
+        height = measurements.get("height", "")
+        weight = measurements.get("weight", "")
+        bmi = measurements.get("bmi", "")
+        if height:
+            c.drawString(200, 690, f"{height} cm")
+        if weight:
+            c.drawString(200, 665, f"{weight} kg")
+        if bmi:
+            c.drawString(179.1, 640.9, str(bmi))
+
+        # ── Weight value + "kg" unit inside the bottom "Weight: __ kg" capsule ──
+        # Same Roboto Bold 12pt #B2E2F2 as the weight value above (only "Weight:"
+        # is baked into the capsule art; we overlay "<weight> kg").
+        if weight:
+            c.drawString(522.1, 318.1, f"{weight} kg")
+
+        # ── Conclusion (Excel col J), confined to the editor-marked box:
+        #    x 146.3..639.4 (w≈493), y 291.6 (top) .. 238.6 (bottom), h≈53.
+        conclusion = ref.get("conclusion", "")
+        if conclusion:
+            self._draw_wrapped(
+                c, conclusion, x=146, y=284, max_width=493,
+                font_name=self.font("body"), font_size=8.8, leading=10.5,
+                color=TEXT_WHITE, max_lines=5,
+            )
+
+        # ── Fact (Excel col K), confined to the editor-marked box:
+        #    x 119.8..370.8 (w≈251), y 200.3 (top) .. 157.2 (bottom), h≈43.
+        #    The black background is part of the page art — do NOT mask here.
+        fact = ref.get("fact", "")
+        if fact:
+            fact_body, _, fact_source = fact.partition("Source")
+            # Fact callout — Roboto Black #FFFFFF (reference nominal 12pt; sized
+            # to 9pt to fit the editor-marked box, x122..368 / h≈43).
+            self._draw_wrapped(
+                c, "Fact: " + fact_body.strip(), x=122, y=193, max_width=246,
+                font_name=self.font("fact"), font_size=9, leading=10.5,
+                color=TEXT_WHITE, max_lines=3,
+            )
+            if fact_source.strip():
+                # Source attribution — Roboto Light #FFFFFF.
+                self._draw_wrapped(
+                    c, ("Source" + fact_source).strip(), x=122, y=164, max_width=246,
+                    font_name=self.font("body"), font_size=7, leading=8.5,
+                    color=TEXT_WHITE, max_lines=1,
+                )
+
+        # ── BMI Observation capsule (label baked into the art) ──
+        # Only the Normal capsule exists, so it shows "Normal".
+        self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 254.7, 373.6)
+
+        # ── Bottom Clara IDs (left + right pages of the spread) ──
+        self._draw_clara_footer(c, clara_id)
+
+        # ── Right page: Summary bar chart markers ──
+        self._draw_page2_summary(c, data)
+
+    def _draw_pill(self, c, x, y, w, h, text, fill_color=colors.HexColor("#2D7B43"),
+                   text_color=colors.white, font_size=12, font_style="data"):
+        """Draw a rounded-end 'capsule' with centered text. (x, y) = bottom-left."""
+        c.setFillColor(fill_color)
+        c.setStrokeColor(fill_color)
+        c.roundRect(x, y, w, h, h / 2, fill=1, stroke=0)
+        font_name = self.font(font_style)
+        c.setFillColor(text_color)
+        c.setFont(font_name, font_size)
+        tw = c.stringWidth(text, font_name, font_size)
+        baseline_y = y + h / 2 - font_size * 0.3
+        c.drawString(x + (w - tw) / 2, baseline_y, text)
+
+    def _draw_summary_line(self, c, x_end, y):
+        """Draw a white horizontal progress line from the bar's left edge to x_end."""
+        c.setStrokeColor(colors.white)
+        c.setLineWidth(SUMMARY_LINE_THICKNESS)
+        c.setLineCap(1)  # round caps look cleaner on the gradient bar
+        c.line(SUMMARY_BAR_LEFT_X, y, x_end, y)
+
+    def _draw_page2_summary(self, c, data):
+        """Place rating lines on the right-page Summary bar chart.
+
+        For each rated system row, draws a white horizontal line from the bar's
+        left edge to the rating column's x position. Rows without data are skipped.
+        """
+        ratings = {
+            "bmi": bmi_summary_rating(data.get("bmi_category", "")),
+            "hemoglobin": hemoglobin_summary_rating(data.get("blood_work", {})),
+            "nervous": nervous_summary_rating(data.get("nervous", {})),
+            "cardio": cardio_summary_rating(data.get("cardio", {})),
+            "respiratory": respiratory_summary_rating(data.get("respiratory", {})),
+            "ent": ent_summary_rating(data.get("ent", {})),
+            "dental": dental_summary_rating(
+                {k: (v or {}).get("value") for k, v in (data.get("dental", {}) or {}).items()}
+            ),
+            # Spirometry / Eye Vision have no inputs nor defaults in
+            # the current JSON contract; left None.
+        }
+        for row_key, rating in ratings.items():
+            if not rating:
+                continue
+            x_end = SUMMARY_X.get(rating)
+            y = SUMMARY_ROW_Y.get(row_key)
+            if x_end is not None and y is not None:
+                self._draw_summary_line(c, x_end, y)
+
+    # ---------- Page 3: Nervous System (left) + Vitals (right) ----------
+
+    def _draw_page3_overlay(self, c, data):
+        """Page 3 spread.
+
+        Left ("Nervous System"): no JSON data yet for mental/motor/reflexes,
+        so only the Clara ID strip is populated.
+
+        Right ("VITALS"): pulse + oxymetry values in their boxes, short
+        observation label, and the matching outlook+actions paragraph from
+        the VITALS Excel sheet J4 (picked by actual readings).
+
+        Coordinates are first-pass estimates and will be refined with editor coords.
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+        vitals = data.get("vitals", {})
+        pulse = vitals.get("pulse_rate", "")
+        oxygen = vitals.get("oxymetry", "")
+
+        # ── Right page (VITALS) ──
+        c.setFillColor(colors.white)
+
+        # Pulse Rate big numeric value — Roboto Light 38pt #B2E2F2 ("bpm" unit
+        # is baked into the box art). clara_font_reference, Page 3 VITALS.
+        if pulse:
+            self._draw_value_with_unit(c, str(pulse), "", 780.6, 541.3, HEADING_BLUE)
+
+        # Oxymetry big numeric value + "%" unit — Roboto Light 38pt / 18pt #B2E2F2.
+        if oxygen:
+            self._draw_value_with_unit(c, str(oxygen), "%", 783.1, 440.4, HEADING_BLUE)
+
+        # Conclusion (Outlook + Actions) confined to the editor-marked box:
+        # x 731.4..1017.7 (w≈286), y 239.9 (bottom) .. 291.6 (top), h≈52.
+        vitals_ref = self.vitals_reference()
+        conclusion = vitals_pick_section(vitals_ref, pulse, oxygen) if vitals_ref else ""
+        if conclusion:
+            conclusion = conclusion.replace("\nActions:", "\n\nActions:")
+            self._draw_wrapped(
+                c, conclusion, x=731.4, y=285, max_width=286,
+                font_name=self.font("body"), font_size=8.8, leading=10,
+                color=TEXT_WHITE, max_lines=5,
+            )
+
+        # VITALS Observation capsule (label baked into the art). Only the Normal
+        # capsule exists, so it shows "Normal".
+        self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 842.4, 367.3)
+
+        # Right-page Clara ID bottom strip
+        self._draw_clara_footer(c, clara_id, left=False)
+
+        # ── Left page (Nervous System) ──
+        self._draw_page3_nervous(c, data)
+
+        self._draw_clara_footer(c, clara_id, right=False)
+
+    def _draw_page3_nervous(self, c, data):
+        """Left page: overlay Mental Status / Motor Strength / Reflexes pill + comment.
+
+        Each section uses the SVG pill from backgrounds/Boy/Page 3/<sub>/<Cat>.svg
+        and the corresponding comment from the NERVOUS SYSTEM Excel sheet (column H).
+        Until the JSON gains those fields, defaults from NERVOUS_DEFAULTS are used.
+        """
+        nervous_data = data.get("nervous", {}) or {}
+        ref = self.nervous_reference()
+
+        # (sub_param_key, pill_left_x, pill_center_y, pill_w, pill_h, comment_max_lines)
+        # The editor's FIELDS panel gives (x, y) where x = pill left edge and
+        # y = pill VERTICAL CENTER (so the pill aligns visually with the section
+        # heading's baseline gap).
+        rows = [
+            ("mental_status",  156.4, 598.0, 170, 46, 6),
+            ("motor_strength", 160.2, 463.1, 170, 46, 6),
+            ("reflexes",       160.2, 316.8, 170, 46, 6),
+        ]
+        for key, pill_x, pill_cy, w, h, com_lines in rows:
+            category = nervous_data.get(key) or NERVOUS_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = NERVOUS_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 3", svg_name), pill_x, pill_y, w, h)
+                label = os.path.splitext(os.path.basename(svg_name))[0]
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            comment = (ref.get(key, {}) or {}).get(category, "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=pill_x + 4, y=pill_y - 14, max_width=170,
+                    font_name=self.font("body"), font_size=8.8, leading=12,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+    # ---------- Page 4: Anemia Screening (left) + Cardiovascular System (right) ----------
+
+    def _draw_page4_overlay(self, c, data):
+        """Page 4 spread.
+
+        LEFT (Anemia Screening): hemoglobin value, category pill, comment from
+        ANEMIA Excel J column. Category derived from hemoglobin text since the
+        API returns descriptive text (no numeric g/dl value).
+
+        RIGHT (Cardiovascular): Heart Sounds / Capillary Refill / Pulse Quality
+        capsule SVG overlays + comment from CARDIOVASCULAR SYSTEM sheet column H.
+        Defaults to the "positive" category for each sub-param until JSON gains
+        cardiovascular fields under data.cardio.
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+        blood_work = data.get("blood_work", {})
+        cardio_data = data.get("cardio", {}) or {}
+
+        # ============ LEFT: Anemia Screening ============
+        anemia_cat = anemia_category_from_blood_work(blood_work)
+        anemia_ref = self.anemia_reference()
+        anemia_row = anemia_ref.get(anemia_cat.lower(), {})
+
+        # Hemoglobin value box — API returns text not numeric, so we use the
+        # blood_work numeric field if present, otherwise leave blank.
+        hb_numeric = blood_work.get("hemoglobin_numeric") or ""
+        if hb_numeric:
+            # Large hemoglobin value — Roboto Light 46pt #8EC8D1 ("g/dl" unit is
+            # baked into the box art). clara_font_reference, Page 4 Anemia.
+            self._draw_value_with_unit(
+                c, str(hb_numeric), "", 187.9, 610.6 - 6, PATIENT_TEAL, value_size=46
+            )
+
+        # Comment text (Excel J - Parental Guidance) below the threshold table.
+        comment = anemia_row.get("comment", "")
+        if comment:
+            self._draw_wrapped(
+                c, comment, x=151.3, y=314.3, max_width=437,
+                font_name=self.font("body"), font_size=8.8, leading=11,
+                color=TEXT_WHITE, max_lines=8,
+            )
+
+        # Severity arc + marker dot on the blood-cell circle.
+        self._draw_anemia_severity_arc(c, anemia_cat)
+
+        # ============ RIGHT: Cardiovascular System ============
+        cardio_ref = self.cardio_reference()
+        # (sub_key, pill_left_x, pill_center_y, pill_w, pill_h, comment_lines)
+        cardio_rows = [
+            ("heart_sounds",      741.5, 616.9, 170, 46, 4),
+            ("capillary_refill",  745.3, 453.0, 170, 46, 4),
+            ("pulse_quality",     745.3, 287.8, 170, 46, 4),
+        ]
+        for key, pill_x, pill_cy, w, h, com_lines in cardio_rows:
+            category = cardio_data.get(key) or CARDIO_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = CARDIO_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 4", svg_name), pill_x, pill_y, w, h)
+                # Short label = SVG filename minus extension
+                label = os.path.splitext(os.path.basename(svg_name))[0]
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            comment = (cardio_ref.get(key, {}) or {}).get(category, "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=pill_x + 4, y=pill_y - 14, max_width=190,
+                    font_name=self.font("body"), font_size=8.8, leading=11,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+        # Anemia Observation capsule (LEFT) + Cardiovascular Doctor Visit (RIGHT).
+        # No cardio doctor-visit field in the JSON yet -> defaults to NO.
+        self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 258.5, 556.4)
+        self._draw_pill_capsule(c, DOCTOR_VISIT_SVG["NO"], 1010.1, 273.9)
+
+        # Clara ID strips at the bottom of both pages
+        self._draw_clara_footer(c, clara_id)
+
+    # Circle geometry for the Page-4 blood-cell severity dial (left page).
+    # Categories sit at the 4 cardinal positions on a dashed circle.
+    _ANEMIA_CIRCLE = {"cx": 535.0, "cy": 432.0, "r": 72.0}
+    _ANEMIA_ANGLES = {
+        # math degrees: 0=right, 90=top, 180=left, 270=bottom
+        "severe anemic": 0.0,            # right
+        "moderate anemic": 90.0,         # top
+        "mild anemic": 180.0,            # left
+        "normal ( non anemic)": 270.0,   # bottom
+    }
+
+    # Arc sweep per category. Arc starts at Normal (bottom, 270°) and grows
+    # clockwise toward the patient's category — so a longer arc means a worse
+    # reading. Normal = 0° (just the marker dot, no arc).
+    _ANEMIA_ARC_SWEEP = {
+        "normal ( non anemic)": 0,      # dot only at Normal
+        "mild anemic":         -90,     # CW from Normal -> Mild (left)
+        "moderate anemic":     -180,    # CW from Normal -> Moderate (top)
+        "severe anemic":       -270,    # CW from Normal -> Severe (right)
+    }
+
+    def _draw_anemia_severity_arc(self, c, category):
+        """Draw the dynamic severity arc + marker dot on the blood-cell circle.
+
+        Arc starts at the Normal position (bottom of the circle) and sweeps
+        clockwise to the patient's category — so a healthy reading shows just
+        a dot at Normal, and the arc lengthens as severity increases.
+        """
+        cat_lower = category.lower()
+        end_angle = self._ANEMIA_ANGLES.get(cat_lower)
+        sweep = self._ANEMIA_ARC_SWEEP.get(cat_lower)
+        if end_angle is None or sweep is None:
+            return
+        cx = self._ANEMIA_CIRCLE["cx"]
+        cy = self._ANEMIA_CIRCLE["cy"]
+        r = self._ANEMIA_CIRCLE["r"]
+
+        # Arc from Normal (270°) CW to the patient's category position
+        if sweep != 0:
+            c.saveState()
+            c.setStrokeColor(colors.HexColor("#B5E853"))  # lime-green progress arc
+            c.setLineWidth(3)
+            c.setLineCap(1)
+            path = c.beginPath()
+            start_x = cx + r * math.cos(math.radians(270))
+            start_y = cy + r * math.sin(math.radians(270))
+            path.moveTo(start_x, start_y)
+            path.arcTo(cx - r, cy - r, cx + r, cy + r, startAng=270, extent=sweep)
+            c.drawPath(path, stroke=1, fill=0)
+            c.restoreState()
+
+        # Marker dot at the patient's category position
+        rad = math.radians(end_angle)
+        dot_x = cx + r * math.cos(rad)
+        dot_y = cy + r * math.sin(rad)
+        c.saveState()
+        c.setFillColor(colors.HexColor("#2D7B43"))  # forest green (matches capsules)
+        c.setStrokeColor(colors.white)
+        c.setLineWidth(1.5)
+        c.circle(dot_x, dot_y, 4, stroke=1, fill=1)
+        c.restoreState()
+
+    # ---------- Page 5: Respiratory System (left) + Personal Hygiene (right) ----------
+
+    def _draw_page5_overlay(self, c, data):
+        """Page 5 spread.
+
+        LEFT (Respiratory): Breath Sounds / Effort / Cough capsules + comments.
+        Doctor Visit pill at bottom-left. JSON has no respiratory data yet, so
+        positive defaults are used.
+
+        RIGHT (Personal Hygiene): Hair + Nail capsules with the category label,
+        and a marker dot on the Poor/Moderate/Excellent scale below each.
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+        respiratory_data = data.get("respiratory", {}) or {}
+        hygiene_data = data.get("hygiene", {}) or {}
+
+        # ============ LEFT: Respiratory System ============
+        resp_ref = self.respiratory_reference()
+        # (sub_key, pill_left_x, pill_center_y, pill_w, pill_h, com_max_lines, com_max_width)
+        # Editor-marked comment zones (x left..right, y bottom..top):
+        #   breath_sounds : x 141.2..283.7, y 527.4..580.4
+        #   effort        : x 459.0..619.2, y 539.5..581.1
+        #   cough         : x 141.2..283.7, y 374.3..423.5
+        resp_rows = [
+            ("breath_sounds", 141.2, 601.8, 170, 46, 4, 138),
+            ("effort",        459.0, 604.3, 170, 46, 4, 156),
+            ("cough",         141.2, 448.0, 170, 46, 4, 138),
+        ]
+        for key, pill_x, pill_cy, w, h, com_lines, com_max_w in resp_rows:
+            category = respiratory_data.get(key) or RESPIRATORY_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = RESPIRATORY_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 5", svg_name), pill_x, pill_y, w, h)
+                label = os.path.splitext(os.path.basename(svg_name))[0]
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            comment = (resp_ref.get(key, {}) or {}).get(category, "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=pill_x + 4, y=pill_y - 14, max_width=com_max_w,
+                    font_name=self.font("body"), font_size=8.8, leading=11,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+        # Doctor Visit Recommended capsule — no respiratory doctor-visit field in
+        # the JSON yet, so it defaults to NO. Label is baked into the page art.
+        self._draw_pill_capsule(c, DOCTOR_VISIT_SVG["NO"], 129.9, 253.8)
+
+        # ============ RIGHT: Personal Hygiene ============
+        hygiene_ref = self.hygiene_reference()
+        hair_category = hygiene_category_from_text(
+            hygiene_data.get("hair_value"), hygiene_data.get("hair_comment")
+        )
+        nail_category = hygiene_category_from_text(
+            hygiene_data.get("nail_value"), hygiene_data.get("nail_comment")
+        )
+
+        # Hair Hygiene scale marker
+        # 3-point scale dot positions for hair: poor=750.3, moderate=877.7, excellent=1026.5, all y=516.1
+        hair_scale = {
+            "Needs Attention": (750.3, 532),
+            "Moderate":        (877.7, 532),
+            "Excellent":       (1026.5, 532),
+        }
+        self._draw_scale_marker(c, *hair_scale[hair_category])
+
+        # Nail Hygiene scale marker
+        # 3-point scale dot positions for nail: poor=926.9, moderate=1054.2, excellent=1203.1, all y=284.0
+        nail_scale = {
+            "Needs Attention": (926.9, 294),
+            "Moderate":        (1054.2, 294),
+            "Excellent":       (1203.1, 294),
+        }
+        self._draw_scale_marker(c, *nail_scale[nail_category])
+
+        # Combined parental guidance at the bottom of the right page.
+        # The Excel sheet has ONE shared guidance per category for hair + nail,
+        # so we pick the WORSE of the two categories to show the most relevant text.
+        # Editor-marked zone: x 750.3..1209.4 (w≈459), y 126.4 (bottom) .. 209.1 (top).
+        severity = {"Excellent": 0, "Moderate": 1, "Needs Attention": 2}
+        worst = max((hair_category, nail_category), key=lambda k: severity.get(k, 0))
+        combined_comment = hygiene_ref.get(worst, "")
+        if combined_comment:
+            self._draw_wrapped(
+                c, combined_comment, x=750.3, y=201, max_width=459,
+                font_name=self.font("body"), font_size=8.8, leading=12,
+                color=TEXT_WHITE, max_lines=6,
+            )
+
+        # Clara ID strips
+        self._draw_clara_footer(c, clara_id)
+
+    def _scale_triangle_drawing(self):
+        """Lazy-load and cache the white-recolored triangle SVG marker."""
+        if getattr(self, "_triangle_dwg", None) is not None:
+            return self._triangle_dwg
+        # Triangle SVG sits at the repo's backgrounds/ root.
+        svg_path = os.path.join(
+            os.path.dirname(self.backgrounds_root),
+            "triangle-shape-container-empty-wrapper-point-svgrepo-com.svg",
+        )
+        if not os.path.exists(svg_path):
+            self._triangle_dwg = None
+            return None
+        d = svg2rlg(svg_path)
+        # Recolor outline/fill to white — but only touch elements that already
+        # have a non-transparent color (skip background `rect`s with fill=none).
+        white = colors.white
+        def walk(node):
+            if getattr(node, "strokeColor", None) is not None:
+                try:
+                    node.strokeColor = white
+                except Exception:
+                    pass
+            if getattr(node, "fillColor", None) is not None:
+                try:
+                    node.fillColor = white
+                except Exception:
+                    pass
+            children = getattr(node, "contents", None)
+            if children:
+                for child in children:
+                    walk(child)
+        walk(d)
+        self._triangle_dwg = d
+        return d
+
+    def _draw_scale_marker(self, c, x, y, size=14):
+        """Draw the triangle marker SVG centered at (x, y) on a hygiene scale track."""
+        d = self._scale_triangle_drawing()
+        if d is None:
+            # Fallback: small filled circle if SVG missing
+            c.saveState()
+            c.setFillColor(colors.white)
+            c.circle(x, y, 4, fill=1, stroke=0)
+            c.restoreState()
+            return
+        # The svglib Drawing carries a persistent scale, so build a fresh copy each call.
+        from copy import deepcopy
+        dwg = deepcopy(d)
+        scale = size / dwg.width
+        dwg.scale(scale, scale)
+        dwg.width *= scale
+        dwg.height *= scale
+        renderPDF.draw(dwg, c, x - size / 2, y - size / 2)
+
+    # ---------- Page 7: Dental Examination (left) + ENT Examination (right) ----------
+
+    def _draw_page7_overlay(self, c, data):
+        """Page 7 spread — Dental Examination on the LEFT page, ENT on the RIGHT.
+
+        ENT has 4 sub-parameters arranged in a 2x2 grid on the right page:
+        ears + nose on the top row, hearing_status + throat on the bottom.
+        A single comment box below combines all four observations. JSON has no
+        ENT fields yet, so positive defaults are used.
+
+        Editor-marked pill positions (x = left edge, y = vertical center):
+          ears           : (739.0,  693.9)
+          nose           : (1085.8, 693.9)
+          hearing_status : (739.0,  354.6)
+          throat         : (1099.6, 354.6)
+          comment (top-left of combined box): (776.8, 256.3)
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+        ent_data = data.get("ent", {}) or {}
+        ent_ref = self.ent_reference()
+
+        # (sub_key, pill_x, pill_cy, pill_w, pill_h, com_x, com_y, com_max_w, com_lines)
+        # Editor-marked comment zones (x left..right, y bottom..top):
+        #   ears           : x 742.8..882.7,    y 618.5..663.6
+        #   nose           : x 1089.6..1232.1,  y 618.2..663.6
+        #   hearing_status : x 742.8..882.7,    y 295.4..324.4  (only ~3 lines fit)
+        #   throat         : x 1104.7..1243.4,  y 284.3..324.6
+        ent_rows = [
+            ("ears",            739.0, 693.9, 170, 46,  742.8, 657, 139, 4),
+            ("nose",           1085.8, 693.9, 170, 46, 1089.6, 657, 142, 4),
+            ("hearing_status",  739.0, 354.6, 170, 46,  742.8, 318, 139, 3),
+            ("throat",         1099.6, 354.6, 170, 46, 1104.7, 318, 138, 4),
+        ]
+        for key, pill_x, pill_cy, w, h, com_x, com_y, com_max_w, com_lines in ent_rows:
+            category = ent_data.get(key) or ENT_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = ENT_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 7", svg_name), pill_x, pill_y, w, h)
+                label = os.path.splitext(os.path.basename(svg_name))[0]
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            entry = (ent_ref.get(key, {}) or {}).get(category, {}) or {}
+            comment = entry.get("comment", "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=com_x, y=com_y, max_width=com_max_w,
+                    font_name=self.font("body"), font_size=8.8, leading=11,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+        # Bottom "Comment" dark box is baked into the template SVG — no overlay needed.
+
+        # Dental overlay on the LEFT page of the spread.
+        self._draw_page7_dental(c, data)
+
+        # Clara ID strips at the bottom of both pages (Dental left, ENT right)
+        self._draw_clara_footer(c, clara_id)
+
+    def _draw_page7_dental(self, c, data):
+        """Page 7 LEFT page — Dental Examination overlay.
+
+        Seven sub-parameter pills in a 2-column grid + Dentist Visit Recommended
+        pill at bottom-left.
+
+        Editor-marked pill positions (x = pill LEFT edge, y = pill VERTICAL CENTER):
+          LEFT  col: dental_cavity          (240.9, 632.1)
+                     gum_health             (240.9, 531.2)
+                     alignment              (240.9, 426.5)
+                     other_condition        (240.9, 334.5)
+          RIGHT col: nursing_bottle_caries  (547.3, 633.3)
+                     dental_fluorosis       (547.3, 530.4)
+                     oral_hygiene           (547.3, 425.8)
+
+        Each pill's comment text starts ~35pt below the pill center, left-aligned
+        with the column's label start, matching the Page 8 spacing.
+        """
+        dental_data = data.get("dental", {}) or {}
+        ref = self.dental_reference()
+
+        # Reduced from 170x46 so the right-column pills (pill_x=547.3) don't
+        # bleed past the page midline (~684) into the ENT page on the right.
+        pill_w, pill_h = 141, 36
+        # (key, pill_x, pill_cy, w, h, com_x, com_y, com_max_w, com_lines)
+        rows = [
+            # LEFT column — comment x aligned to each section heading's x.
+            ("dental_cavity",         240.9, 632.1, pill_w, pill_h, 129.9, 597, 220, 3),
+            ("gum_health",            240.9, 531.2, pill_w, pill_h, 129.9, 496, 220, 3),
+            ("alignment",             240.9, 426.5, pill_w, pill_h, 129.9, 392, 220, 3),
+            ("other_condition",       240.9, 334.5, pill_w, pill_h, 133.7, 300, 220, 3),
+            # RIGHT column — comment x aligned to each section heading's x.
+            ("nursing_bottle_caries", 547.3, 633.3, pill_w, pill_h, 417.4, 598, 220, 3),
+            ("dental_fluorosis",      547.3, 530.4, pill_w, pill_h, 422.5, 495, 220, 3),
+            ("oral_hygiene",          547.3, 425.8, pill_w, pill_h, 426.2, 391, 220, 3),
+        ]
+        for key, pill_x, pill_cy, w, h, com_x, com_y, com_max_w, com_lines in rows:
+            raw = (dental_data.get(key) or {}).get("value")
+            category = dental_normalize(key, raw) or DENTAL_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = DENTAL_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 7", svg_name), pill_x, pill_y, w, h)
+                label = DENTAL_PILL_LABELS.get((key, category)) or \
+                    os.path.splitext(os.path.basename(svg_name))[0].replace("-", " ")
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            comment = (ref.get(key, {}) or {}).get(category, "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=com_x, y=com_y, max_width=com_max_w,
+                    font_name=self.font("body"), font_size=8.8, leading=11,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+        # Dentist Visit Recommended capsule (YES/NO) — label baked into the art.
+        dv = dental_visit_label_from_text((dental_data.get("dental_visit") or {}).get("value"))
+        self._draw_pill_capsule(c, DOCTOR_VISIT_SVG[dv], 140.0, 188.2)
+
+    # ---------- Page 8: General Examination ----------
+
+    def _draw_page8_overlay(self, c, data):
+        """Page 8 — General Examination spread (single content area, two columns).
+
+        Editor-marked pill positions (x = pill left edge, y = pill vertical center).
+        Each pill gets its category capsule SVG overlay + the matching observation
+        comment (col H) drawn just below. A Doctor Visit Recommended pill sits at
+        the bottom-right driven by the GENERAL EXAMINATION doctor_visit text.
+
+        Posture and gait_and_coordination are not present in the current API
+        contract, so they fall back to positive defaults from GENERAL_DEFAULTS.
+        The center-bottom description paragraph is part of the template SVG.
+        """
+        student = data.get("student", {})
+        clara_id = student.get("clara_id", "")
+        general = data.get("general", {}) or {}
+        ref = self.general_examination_reference()
+
+        # (field_key, pill_x, pill_cy, pill_w, pill_h, com_x, com_y, com_max_w, com_lines)
+        # Comment placement is a first-pass estimate (offset below each pill) —
+        # refine with editor zone corners as you did for ENT.
+        # Page-8 pill SVGs are 495x149 (visible pill ~88% w x 62% h). Render at 176x52
+        # so the visible pill is ~155x32, matching the ENT/cardio pill SVGs (684x186).
+        pill_w, pill_h = 176, 52
+        rows = [
+            # LEFT column — editor-marked comment zones (x 152.6..365.7, w≈213):
+            #   pallor          : y 658.3..693.9
+            #   icterus         : y 557.7..594.2
+            #   cyanosis        : y 456.5..493.1
+            #   clubbing        : y 362.0..393.5
+            #   lympha_denopathy: y 258.8..294.1
+            #   skin_assessment : y 164.2..194.5
+            ("pallor",                276.2, 722.9, pill_w, pill_h, 145.6, 687, 213, 3),
+            ("icterus",               276.2, 620.7, pill_w, pill_h, 145.6, 587, 213, 3),
+            ("cyanosis",              276.2, 521.1, pill_w, pill_h, 145.6, 486, 213, 3),
+            ("clubbing",              276.2, 421.5, pill_w, pill_h, 145.6, 386, 213, 3),
+            ("lympha_denopathy",      276.2, 320.6, pill_w, pill_h, 145.6, 287, 213, 3),
+            ("skin_assessment",       276.2, 222.2, pill_w, pill_h, 145.6, 187, 213, 3),
+            # RIGHT column — editor-marked allergy zone top-left = (963.5, 691.6).
+            # All right comments share com_x = 963.5; com_y derived per row from
+            # the same pill_bottom→zone_top gap of 5.8pt (so first baseline sits
+            # 12.8pt below pill bottom, matching the left column).
+            ("allergy",              1095.9, 720.4, pill_w, pill_h, 961.5, 685, 213, 3),
+            ("bone_and_joint",       1095.9, 622.0, pill_w, pill_h, 961.5, 586, 213, 3),
+            ("posture",              1095.9, 522.4, pill_w, pill_h, 961.5, 487, 213, 3),
+            ("gait_and_coordination", 1095.9, 431.6, pill_w, pill_h, 961.5, 396, 213, 3),
+            ("puberty",              1095.9, 331.9, pill_w, pill_h, 961.5, 296, 213, 3),
+        ]
+        for key, pill_x, pill_cy, w, h, com_x, com_y, com_max_w, com_lines in rows:
+            raw = (general.get(key) or {}).get("value")
+            category = general_exam_normalize(key, raw) or GENERAL_DEFAULTS.get(key, "")
+            if not category:
+                continue
+            pill_y = pill_cy - h / 2
+            svg_name = GENERAL_PILL_SVGS.get(key, {}).get(category)
+            if svg_name:
+                self._draw_overlay_svg(c, os.path.join("Page 8", svg_name), pill_x, pill_y, w, h)
+                label = os.path.splitext(os.path.basename(svg_name))[0].replace("-", " ")
+                self._draw_pill_label(c, label, pill_x, pill_cy, w)
+            comment = (ref.get(key, {}) or {}).get(category, "")
+            if comment:
+                self._draw_wrapped(
+                    c, comment, x=com_x, y=com_y, max_width=com_max_w,
+                    font_name=self.font("body"), font_size=8.8, leading=11,
+                    color=TEXT_WHITE, max_lines=com_lines,
+                )
+
+        # Doctor Visit Recommended capsule (YES/NO) — label is baked into the art.
+        dv = doctor_visit_label_from_text((general.get("doctor_visit") or {}).get("value"))
+        self._draw_pill_capsule(c, DOCTOR_VISIT_SVG[dv], 966.0, 184.4)
+
+        # Clara ID strips (left + right pages of the spread)
+        self._draw_clara_footer(c, clara_id)
+
+
+# ---------- CLI / module entry ----------
+
+def generate_boy_report(json_path, backgrounds_root, output_path, fonts_folder=None,
+                        xlsx_path=None, student_index=0):
+    """Top-level entry: load JSON, render the Boy report."""
+    data = load_report_data(json_path, student_index)
+
+    print(f"Patient: {data.get('student', {}).get('name', 'Unknown')}")
+    print(f"DOB: {data.get('student', {}).get('dob', 'Unknown')}")
+    print(f"Clara ID: {data.get('student', {}).get('clara_id', 'Unknown')}")
+    print(f"BMI: {data.get('measurements', {}).get('bmi', '?')} -> {data.get('bmi_category', '?')}")
+
+    gen = ClaraBoyReportGenerator(backgrounds_root, fonts_folder, xlsx_path=xlsx_path)
+    gen.generate(data, output_path)
+    print(f"Wrote {output_path}")
+
+
+
+def generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder=None):
+    """Compatibility entry point for pdf_service.py.
+
+    Routes to Boy or Girl generator based on student gender.
+    Girl generator will use backgrounds/Girl/ folder (future implementation).
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    entry = raw.get("data", raw)
+    gender = (entry.get("student") or {}).get("gender", "").upper()
+    if gender == "FEMALE":
+        backgrounds_root = os.path.join(backgrounds_folder, "Girl")
+    else:
+        backgrounds_root = os.path.join(backgrounds_folder, "Boy")
+    xlsx_path = os.path.join(backgrounds_folder, "clara parameter updated final .xlsx")
+    generate_boy_report(
+        json_path=json_path,
+        backgrounds_root=backgrounds_root,
+        output_path=output_path,
+        fonts_folder=fonts_folder,
+        xlsx_path=xlsx_path,
+    )
 
 if __name__ == "__main__":
-    # Parse command-line arguments for FastAPI integration
-    parser = argparse.ArgumentParser(description='Generate Clara Health PDF Report')
-    parser.add_argument('--json', type=str, help='Path to JSON data file')
-    parser.add_argument('--student-ids', type=str, help='Comma-separated student IDs to fetch from API')
-    parser.add_argument('--bearer-token', type=str, help='Bearer token for API authentication')
-    parser.add_argument('--backgrounds', type=str, help='Path to backgrounds folder')
-    parser.add_argument('--fonts', type=str, help='Path to fonts folder (optional)')
-    parser.add_argument('--output', type=str, help='Output PDF file path or directory')
-    
-    args = parser.parse_args()
-    
-    # API mode: Fetch from API and generate reports
-    if args.student_ids and args.bearer_token and args.backgrounds and args.output:
-        student_ids = [int(sid.strip()) for sid in args.student_ids.split(',')]
-        generate_reports_from_api(
-            student_ids=student_ids,
-            bearer_token=args.bearer_token,
-            backgrounds_folder=args.backgrounds,
-            output_dir=args.output,
-            fonts_folder=args.fonts
-        )
-    
-    # File mode: Use command-line args if provided
-    elif args.json and args.backgrounds and args.output:
-        json_path = args.json
-        backgrounds_folder = args.backgrounds
-        fonts_folder = args.fonts
-        output_path = args.output
-        generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
-    
-    # Default mode: Use test paths
-    else:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(current_dir)
-        
-        json_path = os.path.join(parent_dir, "test-report.json")
-        backgrounds_folder = os.path.join(parent_dir, "backgrounds")
-        fonts_folder = os.path.join(parent_dir, "fonts")
-        output_path = os.path.join(parent_dir, "complete_health_report.pdf")
-        
-        generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder)
+    here = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(here)
+
+    generate_boy_report(
+        json_path=os.path.join(project_root, "prod_sample.json"),
+        backgrounds_root=os.path.join(project_root, "backgrounds", "Boy"),
+        output_path=os.path.join(project_root, "boy_report.pdf"),
+        fonts_folder=os.path.join(project_root, "fonts"),
+        xlsx_path=os.path.join(project_root, "backgrounds", "clara parameter updated final .xlsx"),
+    )
