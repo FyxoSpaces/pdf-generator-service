@@ -2009,6 +2009,18 @@ class ClaraBoyReportGenerator:
             hygiene_data.get("nail_value"), hygiene_data.get("nail_comment")
         )
 
+        # Hair + Nail Hygiene observation capsules (category text — Excellent /
+        # Moderate / Needs Attention — is baked into each capsule SVG).
+        hair_cap = os.path.join("Page 5", "Hair Hygiene", f"{hair_category}.svg")
+        self._draw_pill_capsule(c, hair_cap, 752.9, 609.4)
+
+        # Nail Hygiene folder is currently empty -> fall back to the Hair Hygiene
+        # capsule of the same category (visually identical) until nail SVGs exist.
+        nail_cap = os.path.join("Page 5", "Nail Hygiene", f"{nail_category}.svg")
+        if not os.path.exists(os.path.join(self.backgrounds_root, nail_cap)):
+            nail_cap = os.path.join("Page 5", "Hair Hygiene", f"{nail_category}.svg")
+        self._draw_pill_capsule(c, nail_cap, 1051.7, 391.2)
+
         # Hair Hygiene scale marker
         # 3-point scale dot positions for hair: poor=750.3, moderate=877.7, excellent=1026.5, all y=516.1
         hair_scale = {
