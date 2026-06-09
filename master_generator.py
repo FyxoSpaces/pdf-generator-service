@@ -1183,19 +1183,32 @@ def parse_production_student(entry):
 def load_report_data(json_path, student_index=0):
     """Load JSON and normalize to the generator's flat shape.
 
-    Accepts three shapes:
-      1. Production: {"data": {"studentsData": [ {student, campData}, ... ]}}
-      2. Already-flat test JSON (has top-level "student").
+    Accepts these shapes:
+      1. Production "multiple": {"data": {"studentsData": [ {student, campData}, ... ]}}
+         -> parses the entry at student_index.
+      2. Production "single":   {"data": {"student": {...}, "campData": [...]}}
+         This is what pdf_service.py feeds the generator for ONE student —
+         including each element of the /reports/data/multiple array, which the
+         service splits itself before calling in. -> parses that one student.
+      3. Already-flat test JSON (top-level generator shape, no campData).
     """
     with open(json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
     data = raw.get("data", raw)
-    students = data.get("studentsData")
+
+    # 1. Production "multiple": an array of student objects under studentsData.
+    students = data.get("studentsData") if isinstance(data, dict) else None
     if isinstance(students, list) and students:
         return parse_production_student(students[student_index])
 
-    # Already-flat test JSON
+    # 2. Production "single": one student object wrapped under "data". Discriminate
+    #    on campData (a list) so we never misfire on already-flat test JSON, which
+    #    carries measurements/vitals but no campData.
+    if isinstance(data, dict) and isinstance(data.get("campData"), list):
+        return parse_production_student(data)
+
+    # 3. Already-flat test JSON.
     return raw
 
 
