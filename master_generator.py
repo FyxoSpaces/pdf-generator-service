@@ -75,13 +75,14 @@ CLARA_ID_RIGHT_POS = (790.7, 94.0)
 
 
 # ---------- Diet ("food to be included") strips ----------
-# Each diet asset is a self-contained SVG (vector food labels + photos) with its
-# own viewBox; it's rasterized and placed with its BOTTOM-LEFT corner at a fixed
-# PDF-point anchor — ONE shared anchor for every LEFT page, ONE for every RIGHT
-# page. Drawn at a fixed height (width follows the strip's aspect) so every diet
-# strip reads at the same size regardless of its individual viewBox.
-LEFT_DIET_ANCHOR = (399.8, 169.3)    # PDF pt — bottom-left of strip on left pages
-RIGHT_DIET_ANCHOR = (1010.1, 169.3)  # PDF pt — bottom-left of strip on right pages
+# Each diet asset is a self-contained SVG (food labels + photos, flattened to an
+# image) with its own viewBox. It's placed flush to the editor-marked page
+# "extreme" (the page's outer/right edge): the anchor is the strip's BOTTOM-RIGHT
+# corner, so the right edge always lands on the page end and the width extends
+# LEFT — every strip aligns to the same edge regardless of its width. Drawn at a
+# fixed height (width follows the strip's aspect).
+LEFT_DIET_ANCHOR = (682.2, 198.5)    # PDF pt — left-page right edge (gutter), bottom-right
+RIGHT_DIET_ANCHOR = (1281.2, 198.5)  # PDF pt — right-page right edge, bottom-right
 DIET_HEIGHT = 64.0                   # pt — rendered strip height (266 units * 0.24)
 
 # Page 2 (BMI, left): diet keyed by WHO BMI category.
@@ -1413,13 +1414,13 @@ class ClaraBoyReportGenerator:
                     preserveAspectRatio=False, mask="auto")
 
     def _draw_diet(self, c, svg_relpath, anchor, height=DIET_HEIGHT, zoom=2):
-        """Render a diet ("food to be included") strip and place it with its
-        BOTTOM-LEFT corner at the PDF-point `anchor`, at a fixed height (width
-        follows the strip's aspect ratio).
+        """Render a diet ("food to be included") strip flush to the page edge: the
+        PDF-point `anchor` is the strip's BOTTOM-RIGHT corner (the page extreme),
+        so the right edge sits on the page end and the strip extends LEFT. Fixed
+        height; width follows the strip's aspect ratio.
 
-        The strip carries vector food labels alongside photos, so it's rasterized
-        with resvg (the embedded-PNG extractor would drop the labels); falls back
-        to the embedded PNG if resvg is unavailable.
+        Rasterized with resvg; falls back to the embedded PNG (the strips are now
+        flattened single images, so the fallback is lossless too).
         """
         full = os.path.join(self.backgrounds_root, svg_relpath)
         if not os.path.exists(full):
@@ -1432,7 +1433,7 @@ class ClaraBoyReportGenerator:
         if not vw or not vh:
             return
         w_pt = height * (vw / vh)
-        ax, ay = anchor
+        ax, ay = anchor   # bottom-RIGHT corner (page extreme); strip extends left
         img = None
         if _HAS_RESVG:
             try:
@@ -1444,7 +1445,7 @@ class ClaraBoyReportGenerator:
             if not placed:
                 return
             img = Image.open(BytesIO(placed[0]["png_bytes"]))
-        c.drawImage(ImageReader(img), ax, ay, width=w_pt, height=height,
+        c.drawImage(ImageReader(img), ax - w_pt, ay, width=w_pt, height=height,
                     preserveAspectRatio=False, mask="auto")
 
     def _draw_pill_capsule(self, c, svg_relpath, x_left, y_center, w=170, h=46):
