@@ -86,7 +86,7 @@ DIET_HEIGHT = 64.0                   # pt — rendered strip height (266 units *
 
 # Page 2 (BMI, left): diet keyed by WHO BMI category.
 BMI_DIET_SVG = {
-    "Underweight": "Under-Weight_Diet.svg",
+    "Underweight": "Under_Weight_Diet.svg",
     "Normal": "Normal_Diet.svg",
     "Overweight": "Over_Weight_Diet.svg",
     "Obese": "Obese_Diet.svg",
