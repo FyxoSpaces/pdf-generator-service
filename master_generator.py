@@ -13,6 +13,7 @@ import re
 import math
 import base64
 import json
+import requests
 from io import BytesIO
 from datetime import datetime
 from xml.etree import ElementTree as ET
@@ -34,6 +35,13 @@ try:
     _HAS_RESVG = True
 except Exception:
     _HAS_RESVG = False
+
+# qrcode renders the Page-1 cover QR. Optional: if unavailable the QR is skipped.
+try:
+    import qrcode
+    _HAS_QR = True
+except Exception:
+    _HAS_QR = False
 
 
 # 19in x 13in book spread in PostScript points
@@ -64,6 +72,44 @@ OBSERVATION_NORMAL_SVG = "Normal Observation.svg"
 # baked into the template SVG; we only overlay the ID value at these coords.
 CLARA_ID_LEFT_POS = (195.5, 94.0)
 CLARA_ID_RIGHT_POS = (790.7, 94.0)
+
+
+# ---------- Diet ("food to be included") strips ----------
+# Each diet asset is a self-contained SVG (vector food labels + photos) with its
+# own viewBox; it's rasterized and placed with its BOTTOM-LEFT corner at a fixed
+# PDF-point anchor — ONE shared anchor for every LEFT page, ONE for every RIGHT
+# page. Drawn at a fixed height (width follows the strip's aspect) so every diet
+# strip reads at the same size regardless of its individual viewBox.
+LEFT_DIET_ANCHOR = (399.8, 169.3)    # PDF pt — bottom-left of strip on left pages
+RIGHT_DIET_ANCHOR = (1010.1, 169.3)  # PDF pt — bottom-left of strip on right pages
+DIET_HEIGHT = 64.0                   # pt — rendered strip height (266 units * 0.24)
+
+# Page 2 (BMI, left): diet keyed by WHO BMI category.
+BMI_DIET_SVG = {
+    "Underweight": "Under-Weight_Diet.svg",
+    "Normal": "Normal_Diet.svg",
+    "Overweight": "Over_Weight_Diet.svg",
+    "Obese": "Obese_Diet.svg",
+    "Morbidly Obese": "Extremely_Obese_Diet.svg",
+}
+# Page 4 (Anemia, left): diet keyed by anemia category (lowercased to match
+# anemia_category_from_blood_work output).
+ANEMIA_DIET_SVG = {
+    "normal ( non anemic)": "Haemoglobin_Normal_Diet.svg",
+    "mild anemic": "Haemoglobin_Mild_Anemic_Diet.svg",
+    "moderate anemic": "Haemoglobin_Moderate_Anemic_Diet.svg",
+    "severe anemic": "Haemoglobin_Severe_Anemic_Diet.svg",
+}
+# Page 5 (Personal Hygiene, right): diet keyed by the worse hair/nail category.
+HYGIENE_DIET_SVG = {
+    "Excellent": "Personal_Hygiene_Excellent_Diet.svg",
+    "Moderate": "Personal_Hygiene_Moderate_Diet.svg",
+    "Needs Attention": "Personal_Hygiene_Need_Attention_Diet.svg",
+}
+# Single (non-categorized) diet strips.
+VITALS_DIET_SVG = "Pulse_Rate_And_Oxymetry_Diet.svg"   # Page 3, right
+RESPIRATORY_DIET_SVG = "Respiratory_Diet.svg"          # Page 5, left
+ENT_DIET_SVG = "ENT_Diet.svg"                          # Page 7, right
 
 
 # ---------- Clara color palette (clara_font_reference "Color Palette") ----------
@@ -1094,6 +1140,14 @@ def parse_production_student(entry):
     school = student_raw.get("school", {}) or {}
     camp_data = entry.get("campData", []) or []
 
+    # School logo URL (backend serves it, e.g. http://host/uploads/<school>.png).
+    # The exact key isn't fixed yet, so accept the common spellings.
+    school_logo_url = (
+        school.get("logo") or school.get("logoUrl") or school.get("logo_url")
+        or school.get("schoolLogo") or school.get("school_logo")
+        or school.get("logoURL") or ""
+    )
+
     gender = (student_raw.get("gender") or "").upper()
     sex = gender[0] if gender else ""
 
@@ -1176,6 +1230,7 @@ def parse_production_student(entry):
         "hygiene": hygiene,
         "general": general,
         "dental": dental,
+        "school_logo_url": school_logo_url,
         "bmi_category": bmi_category_from_value(measurements.get("bmi")),
     }
 
@@ -1264,9 +1319,13 @@ def register_fonts(fonts_folder):
 class ClaraBoyReportGenerator:
     """Generates the 8-spread Boy report (19x13in book format)."""
 
-    def __init__(self, backgrounds_root, fonts_folder=None, xlsx_path=None):
-        # backgrounds_root should point to `backgrounds/Boy`
+    def __init__(self, backgrounds_root, fonts_folder=None, xlsx_path=None, is_girl=False):
+        # backgrounds_root should point to `backgrounds/Images` (boy + girl share
+        # this one folder; only the page-background SVG differs by gender).
         self.backgrounds_root = backgrounds_root
+        # When True, page backgrounds use the `PageN_Girl.svg` variant. All capsule
+        # / pill overlay assets are shared between boy and girl.
+        self.is_girl = is_girl
         self.has_custom_fonts = register_fonts(fonts_folder) if fonts_folder else False
         self.xlsx_path = xlsx_path
         self._bmi_ref = None
@@ -1351,6 +1410,41 @@ class ClaraBoyReportGenerator:
             return
         pil = Image.open(BytesIO(placed[0]["png_bytes"]))
         c.drawImage(ImageReader(pil), x, y, width=w, height=h,
+                    preserveAspectRatio=False, mask="auto")
+
+    def _draw_diet(self, c, svg_relpath, anchor, height=DIET_HEIGHT, zoom=2):
+        """Render a diet ("food to be included") strip and place it with its
+        BOTTOM-LEFT corner at the PDF-point `anchor`, at a fixed height (width
+        follows the strip's aspect ratio).
+
+        The strip carries vector food labels alongside photos, so it's rasterized
+        with resvg (the embedded-PNG extractor would drop the labels); falls back
+        to the embedded PNG if resvg is unavailable.
+        """
+        full = os.path.join(self.backgrounds_root, svg_relpath)
+        if not os.path.exists(full):
+            return
+        try:
+            vb = (ET.parse(full).getroot().get("viewBox") or "").split()
+            vw, vh = float(vb[2]), float(vb[3])
+        except Exception:
+            return
+        if not vw or not vh:
+            return
+        w_pt = height * (vw / vh)
+        ax, ay = anchor
+        img = None
+        if _HAS_RESVG:
+            try:
+                img = Image.open(BytesIO(bytes(resvg_py.svg_to_bytes(svg_path=full, zoom=int(zoom)))))
+            except Exception as e:
+                print(f"⚠️  Diet render failed for {svg_relpath}: {e}")
+        if img is None:
+            placed = parse_svg_images(full)
+            if not placed:
+                return
+            img = Image.open(BytesIO(placed[0]["png_bytes"]))
+        c.drawImage(ImageReader(img), ax, ay, width=w_pt, height=height,
                     preserveAspectRatio=False, mask="auto")
 
     def _draw_pill_capsule(self, c, svg_relpath, x_left, y_center, w=170, h=46):
@@ -1460,7 +1554,9 @@ class ClaraBoyReportGenerator:
             c.drawString(x + vw + gap, y, unit)
 
     def _page_svg(self, page_num):
-        return os.path.join(self.backgrounds_root, f"Page {page_num}", f"Page{page_num}.svg")
+        # Girl reports use the `PageN_Girl.svg` background; boy/default uses `PageN.svg`.
+        suffix = "_Girl" if self.is_girl else ""
+        return os.path.join(self.backgrounds_root, f"Page {page_num}", f"Page{page_num}{suffix}.svg")
 
     def generate(self, data, output_path):
         c = pdf_canvas.Canvas(output_path, pagesize=PAGE_SIZE)
@@ -1509,55 +1605,109 @@ class ClaraBoyReportGenerator:
 
     # ---------- Page 1: Cover ----------
 
+    # Page-1 cover field anchors, as supplied by the layout editor in SVG viewBox
+    # units (0..5700 x, 0..3900 y) with a BOTTOM-UP origin — so they convert to PDF
+    # points by a plain * SCALE_X / * SCALE_Y (no y-flip). Paste new editor coords
+    # straight in here; _svg_pt() does the conversion.
+    PAGE1_ANCHORS = {
+        "report_year":       (2912.3, 1833.4),  # health screening report year
+        "date_of_screening": (2715.2, 1778.2),
+        "school":            (2514.2, 1723.0),
+        "clara_id":          (2526.1, 1663.9),
+        "name":              (2498.5, 1529.9),
+        "dob":               (2470.9, 1474.8),
+        "sex":               (2459.1, 1419.6),
+        "class":             (2553.7, 1321.1),  # "standard"
+        "section":           (2533.9, 1264.3),  # "division"
+        "roll_no":           (2514.2, 1206.0),
+        "school_logo":       (2671.9, 2224.3),  # logo box CENTER
+        "qr":                (2455.1, 975.1),   # qr box CENTER
+    }
+
+    @staticmethod
+    def _svg_pt(x_svg, y_svg):
+        """Convert an editor SVG-viewBox anchor (bottom-up) to PDF points."""
+        return x_svg * SCALE_X, y_svg * SCALE_Y
+
+    def _fetch_image(self, url):
+        """Download a remote image (e.g. the school logo) into a PIL image.
+        Returns None on any failure so the cover still renders without it."""
+        if not url:
+            return None
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            return Image.open(BytesIO(resp.content))
+        except Exception as e:
+            print(f"⚠️  Could not load school logo from {url}: {e}")
+            return None
+
+    def _make_qr_image(self, content):
+        """Render a QR code PIL image for the given content, or None if qrcode
+        isn't installed. (Placeholder target until the real QR link is finalized.)"""
+        if not _HAS_QR:
+            return None
+        qr = qrcode.QRCode(border=1, box_size=10)
+        qr.add_data(content or "CLARA")
+        qr.make(fit=True)
+        return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    def _draw_image_centered(self, c, pil_img, cx, cy, box_w, box_h):
+        """Draw a PIL image fit inside box_w x box_h, centered on (cx, cy)."""
+        iw, ih = pil_img.size
+        if not iw or not ih:
+            return
+        scale = min(box_w / iw, box_h / ih)
+        w, h = iw * scale, ih * scale
+        c.drawImage(ImageReader(pil_img), cx - w / 2, cy - h / 2, width=w, height=h,
+                    preserveAspectRatio=True, mask="auto")
+
     def _draw_page1_overlay(self, c, data):
-        """Overlay student info on the right page of Spread 1.
+        """Overlay cover (Spread 1) data: screening metadata, student identity,
+        the school logo (fetched from the backend URL), and a QR code.
 
-        Right page background sits at SVG (x=2850, y=196, w=2481, h=3508),
-        which maps to PDF (x=684, y=47, w=595, h=842) — the right half.
-
-        Coordinates were calibrated by overlaying a 10-PDF-pt grid on the
-        rendered right page and reading off each label's colon baseline.
+        All field positions live in PAGE1_ANCHORS as editor SVG-viewBox coords;
+        _svg_pt() converts each to PDF points.
         """
         student = data.get("student", {})
         clara_id = student.get("clara_id", "")
+        school_name = data.get("camp_name", "")
+        logo_url = data.get("school_logo_url", "")
 
         today = datetime.now().strftime("%d/%m/%Y")
         screening_date = data.get("screening_date") or today
         report_year = data.get("report_year") or str(datetime.now().year)
 
-        # Per-field (x, y) positions in PDF points, supplied from the layout editor.
-        # NOTE: report_year, date_of_screening, name, and bottom clara_id are still
-        # estimates — awaiting their exact coords from the editor's field list.
-        pos = {
-            "report_year": (930, 693),       # estimate
-            "date_of_screening": (860, 666), # estimate
-            "name": (785.6, 589.2),          # editor-marked
-            "dob": (784.4, 565.2),
-            "sex": (784.4, 545.1),
-            "class": (807.1, 526.2),
-            "section": (798.3, 506.0),
-            "roll_no": (797.0, 487.1),
-            "clara_id_top": (1175.0, 694.5),
-        }
+        def P(key):
+            return self._svg_pt(*self.PAGE1_ANCHORS[key])
 
-        # Top header line: report year + date of screening + top-right Clara ID.
-        # Roboto Bold 12pt #B2E2F2 (clara_font_reference, Page 1).
+        # ── Screening metadata + school + clara id — Roboto Bold 12pt #B2E2F2 ──
         c.setFillColor(HEADING_BLUE)
         c.setFont(self.font("label"), 12)
-        c.drawString(*pos["report_year"], str(report_year))
-        c.drawString(*pos["clara_id_top"], clara_id)
-        c.drawString(*pos["date_of_screening"], screening_date)
+        c.drawString(*P("report_year"), str(report_year))
+        c.drawString(*P("date_of_screening"), screening_date)
+        if school_name:
+            c.drawString(*P("school"), str(school_name))
+        if clara_id:
+            c.drawString(*P("clara_id"), str(clara_id))
 
-        # Student data block — Bebas Neue Regular 16pt #8EC8D1.
+        # ── Student identity block — Bebas Neue 16pt #8EC8D1 ──
         c.setFillColor(PATIENT_TEAL)
         c.setFont(self.font("patient"), 16)
         for key in ("name", "dob", "sex", "class", "section", "roll_no"):
             value = student.get(key, "")
             if value:
-                c.drawString(*pos[key], str(value))
+                c.drawString(*P(key), str(value))
 
-        # Bottom blue strip Clara IDs on both left and right pages of the spread.
-        self._draw_clara_footer(c, clara_id)
+        # ── School logo — fetched from the backend URL, centered on its anchor ──
+        logo_img = self._fetch_image(logo_url)
+        if logo_img is not None:
+            self._draw_image_centered(c, logo_img, *P("school_logo"), 90, 90)
+
+        # ── QR code — placeholder content (clara id) until the real link is set ──
+        qr_img = self._make_qr_image(clara_id or "CLARA")
+        if qr_img is not None:
+            self._draw_image_centered(c, qr_img, *P("qr"), 80, 80)
 
     # ---------- Page 2: BMI ----------
 
@@ -1673,6 +1823,11 @@ class ClaraBoyReportGenerator:
         # Only the Normal capsule exists, so it shows "Normal".
         self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 254.7, 373.6)
 
+        # ── Diet strip (left page) keyed by BMI category ──
+        diet_svg = BMI_DIET_SVG.get(category)
+        if diet_svg:
+            self._draw_diet(c, os.path.join("Page 2", diet_svg), LEFT_DIET_ANCHOR)
+
         # ── Bottom Clara IDs (left + right pages of the spread) ──
         self._draw_clara_footer(c, clara_id)
 
@@ -1773,6 +1928,9 @@ class ClaraBoyReportGenerator:
         # VITALS Observation capsule (label baked into the art). Only the Normal
         # capsule exists, so it shows "Normal".
         self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 842.4, 367.3)
+
+        # ── Diet strip (right page, Vitals) ──
+        self._draw_diet(c, os.path.join("Page 3", VITALS_DIET_SVG), RIGHT_DIET_ANCHOR)
 
         # Right-page Clara ID bottom strip
         self._draw_clara_footer(c, clara_id, left=False)
@@ -1897,6 +2055,11 @@ class ClaraBoyReportGenerator:
         self._draw_pill_capsule(c, OBSERVATION_NORMAL_SVG, 258.5, 556.4)
         self._draw_pill_capsule(c, DOCTOR_VISIT_SVG["NO"], 1010.1, 273.9)
 
+        # ── Diet strip (left page, Anemia) keyed by anemia category ──
+        diet_svg = ANEMIA_DIET_SVG.get(anemia_cat.lower())
+        if diet_svg:
+            self._draw_diet(c, os.path.join("Page 4", diet_svg), LEFT_DIET_ANCHOR)
+
         # Clara ID strips at the bottom of both pages
         self._draw_clara_footer(c, clara_id)
 
@@ -2013,6 +2176,9 @@ class ClaraBoyReportGenerator:
         # the JSON yet, so it defaults to NO. Label is baked into the page art.
         self._draw_pill_capsule(c, DOCTOR_VISIT_SVG["NO"], 129.9, 253.8)
 
+        # ── Diet strip (left page, Respiratory) ──
+        self._draw_diet(c, os.path.join("Page 5", RESPIRATORY_DIET_SVG), LEFT_DIET_ANCHOR)
+
         # ============ RIGHT: Personal Hygiene ============
         hygiene_ref = self.hygiene_reference()
         hair_category = hygiene_category_from_text(
@@ -2052,19 +2218,24 @@ class ClaraBoyReportGenerator:
         }
         self._draw_scale_marker(c, *nail_scale[nail_category])
 
-        # Combined parental guidance at the bottom of the right page.
-        # The Excel sheet has ONE shared guidance per category for hair + nail,
-        # so we pick the WORSE of the two categories to show the most relevant text.
-        # Editor-marked zone: x 750.3..1209.4 (w≈459), y 126.4 (bottom) .. 209.1 (top).
+        # Combined parental guidance — now confined to the LEFT half of the bottom
+        # band so the diet strip can sit on the right. The Excel sheet has ONE shared
+        # guidance per category for hair + nail, so we show the WORSE of the two.
+        # Editor-marked comment box: x 747.8..968.5 (w≈221), y 116.3 (bottom)..199.5 (top).
         severity = {"Excellent": 0, "Moderate": 1, "Needs Attention": 2}
         worst = max((hair_category, nail_category), key=lambda k: severity.get(k, 0))
         combined_comment = hygiene_ref.get(worst, "")
         if combined_comment:
             self._draw_wrapped(
-                c, combined_comment, x=750.3, y=201, max_width=459,
-                font_name=self.font("body"), font_size=8.8, leading=12,
-                color=TEXT_WHITE, max_lines=6,
+                c, combined_comment, x=747.8, y=193, max_width=220,
+                font_name=self.font("body"), font_size=8.8, leading=11,
+                color=TEXT_WHITE, max_lines=7,
             )
+
+        # ── Diet strip (right page, Personal Hygiene) keyed by the worse category ──
+        diet_svg = HYGIENE_DIET_SVG.get(worst)
+        if diet_svg:
+            self._draw_diet(c, os.path.join("Page 5", diet_svg), RIGHT_DIET_ANCHOR)
 
         # Clara ID strips
         self._draw_clara_footer(c, clara_id)
@@ -2177,6 +2348,9 @@ class ClaraBoyReportGenerator:
                 )
 
         # Bottom "Comment" dark box is baked into the template SVG — no overlay needed.
+
+        # ── Diet strip (right page, ENT) ──
+        self._draw_diet(c, os.path.join("Page 7", ENT_DIET_SVG), RIGHT_DIET_ANCHOR)
 
         # Dental overlay on the LEFT page of the spread.
         self._draw_page7_dental(c, data)
@@ -2323,16 +2497,17 @@ class ClaraBoyReportGenerator:
 # ---------- CLI / module entry ----------
 
 def generate_boy_report(json_path, backgrounds_root, output_path, fonts_folder=None,
-                        xlsx_path=None, student_index=0):
-    """Top-level entry: load JSON, render the Boy report."""
+                        xlsx_path=None, student_index=0, is_girl=False):
+    """Top-level entry: load JSON, render the report (boy or girl page art)."""
     data = load_report_data(json_path, student_index)
 
     print(f"Patient: {data.get('student', {}).get('name', 'Unknown')}")
     print(f"DOB: {data.get('student', {}).get('dob', 'Unknown')}")
     print(f"Clara ID: {data.get('student', {}).get('clara_id', 'Unknown')}")
+    print(f"Gender: {'Girl' if is_girl else 'Boy'}")
     print(f"BMI: {data.get('measurements', {}).get('bmi', '?')} -> {data.get('bmi_category', '?')}")
 
-    gen = ClaraBoyReportGenerator(backgrounds_root, fonts_folder, xlsx_path=xlsx_path)
+    gen = ClaraBoyReportGenerator(backgrounds_root, fonts_folder, xlsx_path=xlsx_path, is_girl=is_girl)
     gen.generate(data, output_path)
     print(f"Wrote {output_path}")
 
@@ -2341,17 +2516,16 @@ def generate_boy_report(json_path, backgrounds_root, output_path, fonts_folder=N
 def generate_complete_health_report(json_path, backgrounds_folder, output_path, fonts_folder=None):
     """Compatibility entry point for pdf_service.py.
 
-    Routes to Boy or Girl generator based on student gender.
-    Girl generator will use backgrounds/Girl/ folder (future implementation).
+    Boy and girl share one asset folder (`backgrounds/Images`); only the page
+    background differs (PageN.svg vs PageN_Girl.svg). A FEMALE student renders
+    the girl backgrounds, everything else renders the boy/default backgrounds.
     """
     with open(json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
     entry = raw.get("data", raw)
     gender = (entry.get("student") or {}).get("gender", "").upper()
-    if gender == "FEMALE":
-        backgrounds_root = os.path.join(backgrounds_folder, "Girl")
-    else:
-        backgrounds_root = os.path.join(backgrounds_folder, "Boy")
+    is_girl = gender == "FEMALE"
+    backgrounds_root = os.path.join(backgrounds_folder, "Images")
     xlsx_path = os.path.join(backgrounds_folder, "clara parameter updated final .xlsx")
     generate_boy_report(
         json_path=json_path,
@@ -2359,6 +2533,7 @@ def generate_complete_health_report(json_path, backgrounds_folder, output_path, 
         output_path=output_path,
         fonts_folder=fonts_folder,
         xlsx_path=xlsx_path,
+        is_girl=is_girl,
     )
 
 if __name__ == "__main__":
@@ -2367,7 +2542,7 @@ if __name__ == "__main__":
 
     generate_boy_report(
         json_path=os.path.join(project_root, "prod_sample.json"),
-        backgrounds_root=os.path.join(project_root, "backgrounds", "Boy"),
+        backgrounds_root=os.path.join(project_root, "backgrounds", "Images"),
         output_path=os.path.join(project_root, "boy_report.pdf"),
         fonts_folder=os.path.join(project_root, "fonts"),
         xlsx_path=os.path.join(project_root, "backgrounds", "clara parameter updated final .xlsx"),
