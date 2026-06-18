@@ -1605,29 +1605,23 @@ class ClaraBoyReportGenerator:
 
     # ---------- Page 1: Cover ----------
 
-    # Page-1 cover field anchors, as supplied by the layout editor in SVG viewBox
-    # units (0..5700 x, 0..3900 y) with a BOTTOM-UP origin — so they convert to PDF
-    # points by a plain * SCALE_X / * SCALE_Y (no y-flip). Paste new editor coords
-    # straight in here; _svg_pt() does the conversion.
+    # Page-1 cover field anchors, in PDF points (the editor now reports PDF-point
+    # coordinates directly, bottom-up origin — same space as the diet/comment
+    # anchors). Paste new editor coords straight in here; no conversion needed.
     PAGE1_ANCHORS = {
-        "report_year":       (2912.3, 1833.4),  # health screening report year
-        "date_of_screening": (2715.2, 1778.2),
-        "school":            (2514.2, 1723.0),
-        "clara_id":          (2526.1, 1663.9),
-        "name":              (2498.5, 1529.9),
-        "dob":               (2470.9, 1474.8),
-        "sex":               (2459.1, 1419.6),
-        "class":             (2553.7, 1321.1),  # "standard"
-        "section":           (2533.9, 1264.3),  # "division"
-        "roll_no":           (2514.2, 1206.0),
-        "school_logo":       (2671.9, 2224.3),  # logo box CENTER
-        "qr":                (2455.1, 975.1),   # qr box CENTER
+        "report_year":       (931.9, 587.9),  # health screening report year
+        "date_of_screening": (870.1, 567.8),
+        "school":            (804.6, 551.4),
+        "clara_id":          (807.1, 533.7),
+        "name":              (799.5, 489.6),
+        "dob":               (789.4, 473.2),
+        "sex":               (786.9, 453.5),
+        "class":             (817.2, 423.2),  # "standard"
+        "section":           (810.9, 404.3),  # "division"
+        "roll_no":           (804.6, 386.7),
+        "school_logo":       (855.0, 714.6),  # logo box CENTER
+        "qr":                (781.9, 311.0),  # qr box CENTER
     }
-
-    @staticmethod
-    def _svg_pt(x_svg, y_svg):
-        """Convert an editor SVG-viewBox anchor (bottom-up) to PDF points."""
-        return x_svg * SCALE_X, y_svg * SCALE_Y
 
     def _fetch_image(self, url):
         """Download a remote image (e.g. the school logo) into a PIL image.
@@ -1666,8 +1660,7 @@ class ClaraBoyReportGenerator:
         """Overlay cover (Spread 1) data: screening metadata, student identity,
         the school logo (fetched from the backend URL), and a QR code.
 
-        All field positions live in PAGE1_ANCHORS as editor SVG-viewBox coords;
-        _svg_pt() converts each to PDF points.
+        All field positions live in PAGE1_ANCHORS as PDF points.
         """
         student = data.get("student", {})
         clara_id = student.get("clara_id", "")
@@ -1679,7 +1672,7 @@ class ClaraBoyReportGenerator:
         report_year = data.get("report_year") or str(datetime.now().year)
 
         def P(key):
-            return self._svg_pt(*self.PAGE1_ANCHORS[key])
+            return self.PAGE1_ANCHORS[key]
 
         # ── Screening metadata + school + clara id — Roboto Bold 12pt #B2E2F2 ──
         c.setFillColor(HEADING_BLUE)
