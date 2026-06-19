@@ -81,8 +81,8 @@ CLARA_ID_RIGHT_POS = (790.7, 94.0)
 # corner, so the right edge always lands on the page end and the width extends
 # LEFT — every strip aligns to the same edge regardless of its width. Drawn at a
 # fixed height (width follows the strip's aspect).
-LEFT_DIET_ANCHOR = (682.2, 198.5)    # PDF pt — left-page right edge (gutter), bottom-right
-RIGHT_DIET_ANCHOR = (1281.2, 198.5)  # PDF pt — right-page right edge, bottom-right
+LEFT_DIET_ANCHOR = (682.2, 145.3)    # PDF pt — left-page right edge (gutter), bottom-right
+RIGHT_DIET_ANCHOR = (1281.2, 145.3)  # PDF pt — right-page right edge, bottom-right
 DIET_HEIGHT = 64.0                   # pt — rendered strip height (266 units * 0.24)
 
 # Page 2 (BMI, left): diet keyed by WHO BMI category.
@@ -1610,18 +1610,18 @@ class ClaraBoyReportGenerator:
     # coordinates directly, bottom-up origin — same space as the diet/comment
     # anchors). Paste new editor coords straight in here; no conversion needed.
     PAGE1_ANCHORS = {
-        "report_year":       (931.9, 587.9),  # health screening report year
-        "date_of_screening": (870.1, 567.8),
-        "school":            (804.6, 551.4),
-        "clara_id":          (807.1, 533.7),
-        "name":              (799.5, 489.6),
-        "dob":               (789.4, 473.2),
-        "sex":               (786.9, 453.5),
-        "class":             (817.2, 423.2),  # "standard"
-        "section":           (810.9, 404.3),  # "division"
-        "roll_no":           (804.6, 386.7),
-        "school_logo":       (855.0, 714.6),  # logo box CENTER
-        "qr":                (781.9, 311.0),  # qr box CENTER
+        "report_year":       (931.9, 585.9),  # health screening report year
+        "date_of_screening": (870.1, 565.8),
+        "school":            (804.6, 549.4),
+        "clara_id":          (807.1, 531.7),
+        "name":              (799.5, 487.6),
+        "dob":               (789.4, 471.2),
+        "sex":               (786.9, 451.5),
+        "class":             (817.2, 421.2),  # "standard"
+        "section":           (810.9, 402.3),  # "division"
+        "roll_no":           (804.6, 384.7),
+        "school_logo":       (855.0, 712.6),  # logo box CENTER
+        "qr":                (781.9, 309.0),  # qr box CENTER
     }
 
     def _fetch_image(self, url):
