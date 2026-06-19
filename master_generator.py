@@ -1141,13 +1141,27 @@ def parse_production_student(entry):
     school = student_raw.get("school", {}) or {}
     camp_data = entry.get("campData", []) or []
 
-    # School logo URL (backend serves it, e.g. http://host/uploads/<school>.png).
-    # The exact key isn't fixed yet, so accept the common spellings.
-    school_logo_url = (
-        school.get("logo") or school.get("logoUrl") or school.get("logo_url")
-        or school.get("schoolLogo") or school.get("school_logo")
-        or school.get("logoURL") or ""
-    )
+    # School logo URL (backend serves it as a public link, e.g.
+    # https://api.clarahealtonation.in/uploads/school-logo_*.jpg). The exact key /
+    # location isn't fixed, so look in BOTH the student's school block and the
+    # top-level school block, trying common key spellings then falling back to any
+    # value that looks like an image URL.
+    def _find_logo_url(d):
+        if not isinstance(d, dict):
+            return ""
+        for k in ("logo", "logoUrl", "logo_url", "schoolLogo", "school_logo", "logoURL"):
+            if d.get(k):
+                return str(d[k])
+        for v in d.values():
+            if isinstance(v, str) and (
+                "/uploads/" in v or v.lower().split("?")[0].endswith(
+                    (".jpg", ".jpeg", ".png", ".webp", ".gif")
+                )
+            ):
+                return v
+        return ""
+
+    school_logo_url = _find_logo_url(school) or _find_logo_url(entry.get("school", {}) or {})
 
     gender = (student_raw.get("gender") or "").upper()
     sex = gender[0] if gender else ""
@@ -1620,9 +1634,15 @@ class ClaraBoyReportGenerator:
         "class":             (817.2, 421.2),  # "standard"
         "section":           (810.9, 402.3),  # "division"
         "roll_no":           (804.6, 384.7),
-        "school_logo":       (855.0, 712.6),  # logo box CENTER
         "qr":                (781.9, 309.0),  # qr box CENTER
     }
+
+    # School-logo box (editor-marked corners, PDF points). The fetched logo is fit
+    # inside this box — centered, aspect preserved, with a small inner padding.
+    # Corners: TL(686.0,777.1) TR(1040.4,767.0) BL(686.0,648.5) BR(1040.4,658.6);
+    # averaged to an axis-aligned rect (x0, y0_bottom, x1, y1_top).
+    PAGE1_LOGO_BOX = (686.0, 653.55, 1040.4, 772.05)
+    PAGE1_LOGO_PAD = 10.0  # pt inner padding so the logo doesn't touch the box edges
 
     def _fetch_image(self, url):
         """Download a remote image (e.g. the school logo) into a PIL image.
@@ -1693,10 +1713,15 @@ class ClaraBoyReportGenerator:
             if value:
                 c.drawString(*P(key), str(value))
 
-        # ── School logo — fetched from the backend URL, centered on its anchor ──
+        # ── School logo — fetched from the backend URL, fit inside its box ──
         logo_img = self._fetch_image(logo_url)
         if logo_img is not None:
-            self._draw_image_centered(c, logo_img, *P("school_logo"), 90, 90)
+            x0, y0, x1, y1 = self.PAGE1_LOGO_BOX
+            pad = self.PAGE1_LOGO_PAD
+            self._draw_image_centered(
+                c, logo_img, (x0 + x1) / 2, (y0 + y1) / 2,
+                (x1 - x0) - 2 * pad, (y1 - y0) - 2 * pad,
+            )
 
         # ── QR code — placeholder content (clara id) until the real link is set ──
         qr_img = self._make_qr_image(clara_id or "CLARA")
