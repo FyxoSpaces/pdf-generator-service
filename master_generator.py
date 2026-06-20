@@ -1624,16 +1624,16 @@ class ClaraBoyReportGenerator:
     # coordinates directly, bottom-up origin — same space as the diet/comment
     # anchors). Paste new editor coords straight in here; no conversion needed.
     PAGE1_ANCHORS = {
-        "report_year":       (747.8, 585.9),  # health screening report year
-        "date_of_screening": (747.8, 565.8),
-        "school":            (747.8, 549.4),
-        "clara_id":          (747.8, 531.7),
-        "name":              (747.8, 487.6),
-        "dob":               (747.8, 471.2),
-        "sex":               (747.8, 451.5),
-        "class":             (746.5, 421.2),  # "standard"
-        "section":           (746.5, 402.3),  # "division"
-        "roll_no":           (746.5, 384.7),
+        "report_year":       (931.9, 581.9),  # health screening report year
+        "date_of_screening": (870.1, 562.8),
+        "school":            (804.6, 545.4),
+        "clara_id":          (807.1, 527.7),
+        "name":              (799.5, 483.6),
+        "dob":               (789.4, 467.2),
+        "sex":               (786.9, 447.5),
+        "class":             (817.2, 417.2),  # "standard"
+        "section":           (810.9, 398.3),  # "division"
+        "roll_no":           (804.6, 380.7),
         "qr":                (781.9, 309.0),  # qr box CENTER
     }
 
